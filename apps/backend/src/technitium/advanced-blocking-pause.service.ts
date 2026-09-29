@@ -94,7 +94,9 @@ export class AdvancedBlockingPauseService
     if (this.reconciling) return this.reconciling;
     this.reconciling = (async () => {
       const now = Date.now();
-      for (const target of this.pauseState.list()) {
+      for (const rawTarget of this.pauseState.list()) {
+        const target = await this.resolveDurableTarget(rawTarget);
+        if (!target) continue;
         if (Date.parse(target.expiresAt) <= now) {
           await this.tryResume(target);
         } else if (target.status === "active") {
@@ -109,6 +111,39 @@ export class AdvancedBlockingPauseService
     return this.reconciling;
   }
 
+  private async resolveDurableTarget(
+    target: AdvancedBlockingPauseTarget,
+  ): Promise<AdvancedBlockingPauseTarget | undefined> {
+    try {
+      const resolved = await this.advancedBlockingService.resolvePauseTarget(
+        target.anchorNodeId,
+        "schedule",
+      );
+      const legacy =
+        !target.writeTargetNodeId.startsWith("node:") &&
+        !target.writeTargetNodeId.startsWith("cluster:");
+      if (legacy) {
+        this.pauseState.migrateLegacyKey(
+          target.writeTargetNodeId,
+          resolved.targetKey,
+        );
+        return this.pauseState.get(resolved.targetKey);
+      }
+      if (resolved.targetKey !== target.writeTargetNodeId) {
+        throw new Error(
+          "Durable pause ownership key does not match the current validated target.",
+        );
+      }
+      return target;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.pauseState.markResumePending(target.writeTargetNodeId, message);
+      this.logger.warn(
+        `Unable to resolve durable Advanced Blocking pause "${target.writeTargetNodeId}": ${message}`,
+      );
+      return undefined;
+    }
+  }
   private async verifyActiveTarget(
     target: AdvancedBlockingPauseTarget,
   ): Promise<void> {

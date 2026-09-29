@@ -166,6 +166,30 @@ export class AdvancedBlockingPauseStateService implements OnModuleInit {
         targetKey,
       );
   }
+  migrateLegacyKey(oldTargetKey: string, newTargetKey: string): void {
+    if (oldTargetKey === newTargetKey) return;
+    const db = this.requireDb();
+    db.exec("BEGIN;");
+    try {
+      const existing = db
+        .prepare(
+          "SELECT 1 FROM advanced_blocking_pauses WHERE write_target_node_id = ?",
+        )
+        .get(newTargetKey);
+      if (existing) {
+        throw new Error(
+          "A durable pause already exists for the resolved ownership key.",
+        );
+      }
+      db.prepare(
+        "UPDATE advanced_blocking_pauses SET write_target_node_id = ?, updated_at = ? WHERE write_target_node_id = ?",
+      ).run(newTargetKey, new Date().toISOString(), oldTargetKey);
+      db.exec("COMMIT;");
+    } catch (error) {
+      db.exec("ROLLBACK;");
+      throw error;
+    }
+  }
   markActivationPending(targetKey: string, error: string): void {
     this.mark(targetKey, "activation-pending", error);
   }
