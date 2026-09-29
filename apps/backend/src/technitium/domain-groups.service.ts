@@ -1471,6 +1471,7 @@ export class DomainGroupsService implements OnModuleInit {
             await this.advancedBlockingService.setConfig(
               summary.id,
               nextConfig,
+              snapshot.configRevision,
             );
           }
           // Update tracking after successful setConfig (or immediately if no changes).

@@ -13,6 +13,7 @@ import {
   listAdvancedBlockingDomainComments,
   mutateAdvancedBlockingDomainComment,
   parseAdvancedBlockingJsonc,
+  patchAdvancedBlockingRootEnableBlocking,
 } from "./advanced-blocking-jsonc";
 import type {
   AdvancedBlockingCombinedOverview,
@@ -31,6 +32,7 @@ import type {
   AdvancedBlockingUrlEntry,
   AdvancedBlockingUrlOverride,
 } from "./advanced-blocking.types";
+import { AdvancedBlockingPauseStateService } from "./advanced-blocking-pause-state.service";
 import { DnsFilteringSnapshotService } from "./dns-filtering-snapshot.service";
 import { QueryLogSqliteService } from "./query-log-sqlite.service";
 import { TechnitiumService } from "./technitium.service";
@@ -140,12 +142,14 @@ export class AdvancedBlockingService {
   private static readonly APP_NAME_CANDIDATES = ["Advanced Blocking"] as const;
   private readonly logger = new Logger(AdvancedBlockingService.name);
   private readonly appNameByNode = new Map<string, string>();
+  private readonly mutationTails = new Map<string, Promise<void>>();
 
   constructor(
     private readonly technitiumService: TechnitiumService,
     @Inject(forwardRef(() => DnsFilteringSnapshotService))
     private readonly dnsFilteringSnapshotService: DnsFilteringSnapshotService,
     private readonly queryLogSqliteService: QueryLogSqliteService,
+    private readonly pauseState: AdvancedBlockingPauseStateService,
   ) {}
 
   async getOverview(): Promise<AdvancedBlockingOverview> {
@@ -234,32 +238,44 @@ export class AdvancedBlockingService {
       );
     }
 
-    await this.assertCurrentRevision(nodeId, expectedRevision);
-    await this.writeRawConfig(nodeId, rawConfig, "session");
-    return this.getRawConfig(nodeId);
+    return this.withConfigMutation(nodeId, async () => {
+      await this.assertCurrentRevision(nodeId, expectedRevision);
+      await this.writeRawConfig(
+        nodeId,
+        this.enforceActivePause(nodeId, rawConfig),
+        "session",
+      );
+      return this.getRawConfig(nodeId);
+    });
   }
 
   async mutateDomainComment(
     nodeId: string,
     mutation: AdvancedBlockingCommentMutationRequest,
   ): Promise<AdvancedBlockingRawConfig> {
-    const current = await this.getRawConfig(nodeId, false);
-    if (current.configRevision !== mutation.configRevision) {
-      throw this.createRevisionConflict();
-    }
+    return this.withConfigMutation(nodeId, async () => {
+      const current = await this.getRawConfig(nodeId, false);
+      if (current.configRevision !== mutation.configRevision) {
+        throw this.createRevisionConflict();
+      }
 
-    let nextRaw: string;
-    try {
-      nextRaw = mutateAdvancedBlockingDomainComment(
-        current.rawConfig,
-        mutation,
+      let nextRaw: string;
+      try {
+        nextRaw = mutateAdvancedBlockingDomainComment(
+          current.rawConfig,
+          mutation,
+        );
+      } catch (error) {
+        throw new BadRequestException((error as Error).message);
+      }
+
+      await this.writeRawConfig(
+        nodeId,
+        this.enforceActivePause(nodeId, nextRaw),
+        "session",
       );
-    } catch (error) {
-      throw new BadRequestException((error as Error).message);
-    }
-
-    await this.writeRawConfig(nodeId, nextRaw, "session");
-    return this.getRawConfig(nodeId);
+      return this.getRawConfig(nodeId);
+    });
   }
 
   async setConfig(
@@ -284,29 +300,112 @@ export class AdvancedBlockingService {
     expectedRevision?: string,
     commentMutations: AdvancedBlockingCommentMutation[] = [],
   ): Promise<AdvancedBlockingSnapshot> {
-    const { envelope: currentEnvelope } = await this.fetchConfigWithFallback(
-      nodeId,
-      authMode,
-    );
-    const currentRawConfig = currentEnvelope?.response?.config || "{}";
-    const currentRevision =
-      calculateAdvancedBlockingConfigRevision(currentRawConfig);
-    if (expectedRevision && expectedRevision !== currentRevision) {
-      throw this.createRevisionConflict();
-    }
+    return this.withConfigMutation(nodeId, async () => {
+      const { envelope: currentEnvelope } = await this.fetchConfigWithFallback(
+        nodeId,
+        authMode,
+      );
+      const currentRawConfig = currentEnvelope?.response?.config || "{}";
+      const currentRevision =
+        calculateAdvancedBlockingConfigRevision(currentRawConfig);
+      if (expectedRevision && expectedRevision !== currentRevision) {
+        throw this.createRevisionConflict();
+      }
 
-    const desiredConfig = this.normalizeSerializedConfig(
-      this.serializeConfig(config),
-    );
-    const patchedConfig = applyAdvancedBlockingJsoncChanges(
-      currentRawConfig,
-      desiredConfig,
-      commentMutations,
-    );
-    await this.writeRawConfig(nodeId, patchedConfig, authMode);
-    return this.getSnapshotWithAuth(nodeId, authMode);
+      const desiredConfig = this.normalizeSerializedConfig(
+        this.serializeConfig(config),
+      );
+      const patchedConfig = applyAdvancedBlockingJsoncChanges(
+        currentRawConfig,
+        desiredConfig,
+        commentMutations,
+      );
+      await this.writeRawConfig(
+        nodeId,
+        this.enforceActivePause(nodeId, patchedConfig),
+        authMode,
+      );
+      return this.getSnapshotWithAuth(nodeId, authMode);
+    });
   }
 
+  /**
+   * Transitions a persisted target to an active pause while it owns the same
+   * per-Primary mutation gate as every other Advanced Blocking writer.
+   */
+  async activatePauseRoot(
+    nodeId: string,
+    authMode: "session" | "schedule",
+  ): Promise<void> {
+    await this.withConfigMutation(nodeId, async () => {
+      const { envelope } = await this.fetchConfigWithFallback(nodeId, authMode);
+      const rawConfig = envelope?.response?.config || "{}";
+      const parsed = parseAdvancedBlockingJsonc(rawConfig);
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        throw new Error("Advanced Blocking config payload was not an object.");
+      }
+      const root = parsed as Record<string, unknown>;
+      const wasPresent = Object.prototype.hasOwnProperty.call(
+        root,
+        "enableBlocking",
+      );
+      const previousValue =
+        typeof root.enableBlocking === "boolean"
+          ? root.enableBlocking
+          : undefined;
+      this.pauseState.activate(nodeId, wasPresent, previousValue);
+      await this.writeRawConfig(
+        nodeId,
+        patchAdvancedBlockingRootEnableBlocking(rawConfig, false),
+        authMode,
+      );
+    });
+  }
+
+  /** Restore only the pause-owned root flag from the current live JSONC. */
+  async restorePauseRoot(
+    nodeId: string,
+    previousValue: boolean | undefined,
+    authMode: "session" | "schedule",
+  ): Promise<void> {
+    await this.withConfigMutation(nodeId, async () => {
+      const { envelope } = await this.fetchConfigWithFallback(nodeId, authMode);
+      const rawConfig = envelope?.response?.config || "{}";
+      await this.writeRawConfig(
+        nodeId,
+        patchAdvancedBlockingRootEnableBlocking(rawConfig, previousValue),
+        authMode,
+      );
+    });
+  }
+
+  private async withConfigMutation<T>(
+    nodeId: string,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    const key = nodeId.toLowerCase();
+    const previous = this.mutationTails.get(key) ?? Promise.resolve();
+    let release!: () => void;
+    const current = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    this.mutationTails.set(key, current);
+    await previous.catch(() => undefined);
+    try {
+      return await operation();
+    } finally {
+      release();
+      if (this.mutationTails.get(key) === current) {
+        this.mutationTails.delete(key);
+      }
+    }
+  }
+
+  private enforceActivePause(nodeId: string, rawConfig: string): string {
+    return this.pauseState.isEnforced(nodeId)
+      ? patchAdvancedBlockingRootEnableBlocking(rawConfig, false)
+      : rawConfig;
+  }
   private async loadSnapshot(
     summary: TechnitiumNodeSummary,
     authMode: "session" | "background" | "schedule",
