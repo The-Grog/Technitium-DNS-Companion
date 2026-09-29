@@ -95,9 +95,13 @@ export class AdvancedBlockingPauseService
     this.reconciling = (async () => {
       const now = Date.now();
       for (const target of this.pauseState.list()) {
-        if (Date.parse(target.expiresAt) <= now) await this.tryResume(target);
-        else
+        if (Date.parse(target.expiresAt) <= now) {
+          await this.tryResume(target);
+        } else if (target.status === "active") {
+          await this.verifyActiveTarget(target);
+        } else {
           await this.tryActivate(target.writeTargetNodeId, target.anchorNodeId);
+        }
       }
     })().finally(() => {
       this.reconciling = undefined;
@@ -105,6 +109,36 @@ export class AdvancedBlockingPauseService
     return this.reconciling;
   }
 
+  private async verifyActiveTarget(
+    target: AdvancedBlockingPauseTarget,
+  ): Promise<void> {
+    try {
+      const live = await this.advancedBlockingService.verifyPauseRoot(
+        target.anchorNodeId,
+        "schedule",
+      );
+      if (live.targetKey !== target.writeTargetNodeId) {
+        throw new Error(
+          "Durable pause ownership key no longer matches the resolved target.",
+        );
+      }
+      if (live.paused) {
+        this.pauseState.markVerified(
+          target.writeTargetNodeId,
+          live.writeNodeId,
+        );
+        return;
+      }
+      // Confirmed drift is the only active-state path that issues config/set.
+      await this.tryActivate(target.writeTargetNodeId, target.anchorNodeId);
+    } catch (error) {
+      // Preserve confirmed ownership/enforcement on transient verification errors.
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.warn(
+        `Failed to verify Advanced Blocking pause for "${target.writeTargetNodeId}": ${message}`,
+      );
+    }
+  }
   private async tryActivate(
     targetKey: string,
     anchorNodeId: string,

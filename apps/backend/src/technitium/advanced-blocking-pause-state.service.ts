@@ -97,7 +97,12 @@ export class AdvancedBlockingPauseStateService implements OnModuleInit {
   }
   isEnforced(targetKey: string): boolean {
     const status = this.get(targetKey)?.status;
-    return status === "active" || status === "resume-pending";
+    return (
+      status === "active" ||
+      status === "resume-pending" ||
+      (status === "activation-pending" &&
+        this.get(targetKey)?.previousEnableBlockingPresent !== undefined)
+    );
   }
   beginPause(targetKey: string, anchorNodeId: string, expiresAt: string): void {
     const now = new Date().toISOString();
@@ -106,6 +111,42 @@ export class AdvancedBlockingPauseStateService implements OnModuleInit {
         `INSERT INTO advanced_blocking_pauses (write_target_node_id, anchor_node_id, status, expires_at, updated_at) VALUES (?, ?, 'activation-pending', ?, ?) ON CONFLICT(write_target_node_id) DO UPDATE SET anchor_node_id = excluded.anchor_node_id, expires_at = excluded.expires_at, status = CASE WHEN advanced_blocking_pauses.status = 'resume-pending' THEN 'activation-pending' ELSE advanced_blocking_pauses.status END, last_error = NULL, updated_at = excluded.updated_at`,
       )
       .run(targetKey, anchorNodeId, expiresAt, now);
+  }
+  captureOriginal(
+    targetKey: string,
+    resolvedNodeId: string,
+    previousPresent: boolean,
+    previousValue: boolean | undefined,
+  ): void {
+    this.requireDb()
+      .prepare(
+        `UPDATE advanced_blocking_pauses
+          SET last_resolved_node_id = ?,
+              previous_enable_blocking_present = COALESCE(previous_enable_blocking_present, ?),
+              previous_enable_blocking_value = CASE
+                WHEN previous_enable_blocking_present IS NULL THEN ?
+                ELSE previous_enable_blocking_value
+              END,
+              updated_at = ?
+          WHERE write_target_node_id = ?`,
+      )
+      .run(
+        resolvedNodeId,
+        previousPresent ? 1 : 0,
+        previousValue === undefined ? null : previousValue ? 1 : 0,
+        new Date().toISOString(),
+        targetKey,
+      );
+  }
+
+  markVerified(targetKey: string, resolvedNodeId: string): void {
+    this.requireDb()
+      .prepare(
+        `UPDATE advanced_blocking_pauses
+          SET last_resolved_node_id = ?, last_error = NULL, updated_at = ?
+          WHERE write_target_node_id = ?`,
+      )
+      .run(resolvedNodeId, new Date().toISOString(), targetKey);
   }
   activate(
     targetKey: string,

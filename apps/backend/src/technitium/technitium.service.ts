@@ -6626,15 +6626,37 @@ export class TechnitiumService {
   async assertSessionConfigWriteAccess(
     candidateNodeIds: string[],
   ): Promise<void> {
+    const session = AuthRequestContext.getSession();
+    const credentials = session?.groupCredentials;
+    if (!session || !credentials) {
+      throw new ForbiddenException(
+        "Apps: Modify permission could not be verified for this session.",
+      );
+    }
     const summaries = await this.listNodes({ authMode: "session" });
     const { perCandidate } = await this.resolveClusterWriteTargets(
       candidateNodeIds,
       summaries,
     );
     for (const nodeId of candidateNodeIds) {
-      if (!perCandidate.get(nodeId)?.writeTarget) {
+      const writeTarget = perCandidate.get(nodeId)?.writeTarget;
+      const config = writeTarget
+        ? this.nodeConfigs.find((item) => item.id === writeTarget)
+        : undefined;
+      const group = config
+        ? credentials.groups.find(
+            (item) => item.groupId === nodeGroupId(config),
+          )
+        : undefined;
+      if (
+        !writeTarget ||
+        !config ||
+        group?.state !== "ready" ||
+        group.capabilities.primaryConfigWrite !== true ||
+        !group.admittedNodeIds.primaryConfigWrite.includes(writeTarget)
+      ) {
         throw new ForbiddenException(
-          `Technitium node "${nodeId}" is not admitted for Apps: Modify in this session.`,
+          `Technitium node "${nodeId}" is not verified for Apps: Modify in this session.`,
         );
       }
     }

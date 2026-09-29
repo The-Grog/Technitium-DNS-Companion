@@ -403,6 +403,14 @@ export class AdvancedBlockingService {
         current?.previousEnableBlockingPresent === undefined
           ? capturedValue
           : current.previousEnableBlockingValue;
+      // Capture the pre-pause baseline before config/set. A timeout or crash
+      // after a successful remote write must never recapture forced false.
+      this.requirePauseState().captureOriginal(
+        target.targetKey,
+        target.writeNodeId,
+        previousPresent,
+        previousValue,
+      );
       await this.writeRawConfig(
         target.writeNodeId,
         patchAdvancedBlockingRootEnableBlocking(rawConfig, false),
@@ -434,6 +442,28 @@ export class AdvancedBlockingService {
     });
   }
 
+  /** Read the live root flag under the canonical mutation gate without writing. */
+  async verifyPauseRoot(
+    nodeId: string,
+    authMode: "session" | "schedule",
+  ): Promise<{ targetKey: string; writeNodeId: string; paused: boolean }> {
+    return this.withConfigMutation(nodeId, authMode, async (target) => {
+      const { envelope } = await this.fetchConfigWithFallback(
+        target.writeNodeId,
+        authMode,
+      );
+      const parsed = parseAdvancedBlockingJsonc(
+        envelope?.response?.config || "{}",
+      );
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+        throw new Error("Advanced Blocking config payload was not an object.");
+      return {
+        targetKey: target.targetKey,
+        writeNodeId: target.writeNodeId,
+        paused: (parsed as Record<string, unknown>).enableBlocking === false,
+      };
+    });
+  }
   /** Restore only the pause-owned root flag and delete durable state inside the gate. */
   async restorePauseRoot(
     nodeId: string,
@@ -1023,7 +1053,11 @@ export class AdvancedBlockingService {
 
     const nextConfig: AdvancedBlockingConfig = { ...config, groups };
 
-    const updated = await this.setConfig(nodeId, nextConfig);
+    const updated = await this.setConfig(
+      nodeId,
+      nextConfig,
+      snapshot.configRevision,
+    );
 
     return {
       snapshotTaken,
