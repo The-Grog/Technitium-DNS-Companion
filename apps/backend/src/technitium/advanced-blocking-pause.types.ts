@@ -1,10 +1,11 @@
 export type AdvancedBlockingPauseTargetStatus =
-  | "pause-pending"
-  | "active"
-  | "resume-pending";
+  "activation-pending" | "active" | "resume-pending";
 
 export interface AdvancedBlockingPauseTarget {
+  /** Stable cluster/group ownership key, not a transient Primary node ID. */
   writeTargetNodeId: string;
+  anchorNodeId: string;
+  lastResolvedNodeId?: string;
   status: AdvancedBlockingPauseTargetStatus;
   expiresAt: string;
   previousEnableBlockingPresent?: boolean;

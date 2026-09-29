@@ -7,6 +7,8 @@ import type {
 
 type PauseRow = {
   write_target_node_id: string;
+  anchor_node_id: string | null;
+  last_resolved_node_id: string | null;
   status: AdvancedBlockingPauseTargetStatus;
   expires_at: string;
   previous_enable_blocking_present: number | null;
@@ -19,7 +21,6 @@ type PauseRow = {
 @Injectable()
 export class AdvancedBlockingPauseStateService implements OnModuleInit {
   private readonly logger = new Logger(AdvancedBlockingPauseStateService.name);
-
   constructor(private readonly companionDb: CompanionDbService) {}
 
   onModuleInit(): void {
@@ -30,134 +31,139 @@ export class AdvancedBlockingPauseStateService implements OnModuleInit {
       );
       return;
     }
-    db.exec(`
-      CREATE TABLE IF NOT EXISTS advanced_blocking_pauses (
-        write_target_node_id TEXT PRIMARY KEY,
-        status TEXT NOT NULL CHECK (status IN ('pause-pending', 'active', 'resume-pending')),
-        expires_at TEXT NOT NULL,
-        previous_enable_blocking_present INTEGER CHECK (previous_enable_blocking_present IN (0, 1)),
-        previous_enable_blocking_value INTEGER CHECK (previous_enable_blocking_value IN (0, 1)),
-        last_error TEXT,
-        updated_at TEXT NOT NULL
+    db.exec(`CREATE TABLE IF NOT EXISTS advanced_blocking_pauses (
+      write_target_node_id TEXT PRIMARY KEY, anchor_node_id TEXT, last_resolved_node_id TEXT,
+      status TEXT NOT NULL CHECK (status IN ('activation-pending', 'active', 'resume-pending')),
+      expires_at TEXT NOT NULL, previous_enable_blocking_present INTEGER CHECK (previous_enable_blocking_present IN (0, 1)),
+      previous_enable_blocking_value INTEGER CHECK (previous_enable_blocking_value IN (0, 1)), last_error TEXT, updated_at TEXT NOT NULL);
+      CREATE INDEX IF NOT EXISTS idx_advanced_blocking_pauses_expiry ON advanced_blocking_pauses(expires_at);`);
+    const names = new Set(
+      (
+        db
+          .prepare("PRAGMA table_info(advanced_blocking_pauses)")
+          .all() as Array<{ name: string }>
+      ).map((column) => column.name),
+    );
+    // The initial feature schema used a stricter status CHECK constraint, so
+    // upgrade it by rebuilding once instead of issuing an invalid UPDATE.
+    if (!names.has("anchor_node_id")) {
+      db.exec(`
+        BEGIN;
+        CREATE TABLE advanced_blocking_pauses_next (
+          write_target_node_id TEXT PRIMARY KEY, anchor_node_id TEXT,
+          last_resolved_node_id TEXT,
+          status TEXT NOT NULL CHECK (status IN ('activation-pending', 'active', 'resume-pending')),
+          expires_at TEXT NOT NULL,
+          previous_enable_blocking_present INTEGER CHECK (previous_enable_blocking_present IN (0, 1)),
+          previous_enable_blocking_value INTEGER CHECK (previous_enable_blocking_value IN (0, 1)),
+          last_error TEXT, updated_at TEXT NOT NULL
+        );
+        INSERT INTO advanced_blocking_pauses_next
+          SELECT write_target_node_id, write_target_node_id, NULL,
+            CASE WHEN status = 'pause-pending' THEN 'activation-pending' ELSE status END,
+            expires_at, previous_enable_blocking_present, previous_enable_blocking_value, last_error, updated_at
+          FROM advanced_blocking_pauses;
+        DROP TABLE advanced_blocking_pauses;
+        ALTER TABLE advanced_blocking_pauses_next RENAME TO advanced_blocking_pauses;
+        CREATE INDEX IF NOT EXISTS idx_advanced_blocking_pauses_expiry ON advanced_blocking_pauses(expires_at);
+        COMMIT;
+      `);
+    } else {
+      if (!names.has("last_resolved_node_id"))
+        db.exec(
+          "ALTER TABLE advanced_blocking_pauses ADD COLUMN last_resolved_node_id TEXT;",
+        );
+      db.exec(
+        "UPDATE advanced_blocking_pauses SET anchor_node_id = write_target_node_id WHERE anchor_node_id IS NULL;",
       );
-      CREATE INDEX IF NOT EXISTS idx_advanced_blocking_pauses_expiry
-        ON advanced_blocking_pauses(expires_at);
-    `);
+    }
   }
-
   list(): AdvancedBlockingPauseTarget[] {
-    const db = this.requireDb();
     return (
-      db
+      this.requireDb()
         .prepare(
-          `SELECT * FROM advanced_blocking_pauses ORDER BY write_target_node_id`,
+          "SELECT * FROM advanced_blocking_pauses ORDER BY write_target_node_id",
         )
         .all() as PauseRow[]
     ).map((row) => this.toTarget(row));
   }
-
-  get(writeTargetNodeId: string): AdvancedBlockingPauseTarget | undefined {
+  get(targetKey: string): AdvancedBlockingPauseTarget | undefined {
     const row = this.requireDb()
       .prepare(
-        `SELECT * FROM advanced_blocking_pauses WHERE write_target_node_id = ?`,
+        "SELECT * FROM advanced_blocking_pauses WHERE write_target_node_id = ?",
       )
-      .get(writeTargetNodeId) as PauseRow | undefined;
+      .get(targetKey) as PauseRow | undefined;
     return row ? this.toTarget(row) : undefined;
   }
-
-  isEnforced(writeTargetNodeId: string): boolean {
-    const target = this.get(writeTargetNodeId);
-    return target?.status === "active" || target?.status === "resume-pending";
+  isEnforced(targetKey: string): boolean {
+    const status = this.get(targetKey)?.status;
+    return status === "active" || status === "resume-pending";
   }
-
-  beginPause(writeTargetNodeId: string, expiresAt: string): void {
+  beginPause(targetKey: string, anchorNodeId: string, expiresAt: string): void {
     const now = new Date().toISOString();
     this.requireDb()
       .prepare(
-        `
-        INSERT INTO advanced_blocking_pauses (
-          write_target_node_id, status, expires_at, updated_at
-        ) VALUES (?, 'pause-pending', ?, ?)
-        ON CONFLICT(write_target_node_id) DO UPDATE SET
-          expires_at = excluded.expires_at,
-          status = CASE
-            WHEN advanced_blocking_pauses.status = 'resume-pending' THEN 'active'
-            ELSE advanced_blocking_pauses.status
-          END,
-          last_error = NULL,
-          updated_at = excluded.updated_at
-      `,
+        `INSERT INTO advanced_blocking_pauses (write_target_node_id, anchor_node_id, status, expires_at, updated_at) VALUES (?, ?, 'activation-pending', ?, ?) ON CONFLICT(write_target_node_id) DO UPDATE SET anchor_node_id = excluded.anchor_node_id, expires_at = excluded.expires_at, status = CASE WHEN advanced_blocking_pauses.status = 'resume-pending' THEN 'activation-pending' ELSE advanced_blocking_pauses.status END, last_error = NULL, updated_at = excluded.updated_at`,
       )
-      .run(writeTargetNodeId, expiresAt, now);
+      .run(targetKey, anchorNodeId, expiresAt, now);
   }
-
   activate(
-    writeTargetNodeId: string,
+    targetKey: string,
+    resolvedNodeId: string,
     previousPresent: boolean,
     previousValue: boolean | undefined,
   ): void {
     this.requireDb()
       .prepare(
-        `
-        UPDATE advanced_blocking_pauses
-        SET status = 'active', previous_enable_blocking_present = ?,
-            previous_enable_blocking_value = ?, last_error = NULL, updated_at = ?
-        WHERE write_target_node_id = ?
-      `,
+        `UPDATE advanced_blocking_pauses SET status = 'active', last_resolved_node_id = ?, previous_enable_blocking_present = COALESCE(previous_enable_blocking_present, ?), previous_enable_blocking_value = CASE WHEN previous_enable_blocking_present IS NULL THEN ? ELSE previous_enable_blocking_value END, last_error = NULL, updated_at = ? WHERE write_target_node_id = ?`,
       )
       .run(
+        resolvedNodeId,
         previousPresent ? 1 : 0,
         previousValue === undefined ? null : previousValue ? 1 : 0,
         new Date().toISOString(),
-        writeTargetNodeId,
+        targetKey,
       );
   }
-
-  markResumePending(writeTargetNodeId: string, error: string): void {
+  markActivationPending(targetKey: string, error: string): void {
+    this.mark(targetKey, "activation-pending", error);
+  }
+  markResumePending(targetKey: string, error: string): void {
+    this.mark(targetKey, "resume-pending", error);
+  }
+  remove(targetKey: string): void {
     this.requireDb()
       .prepare(
-        `
-        UPDATE advanced_blocking_pauses
-        SET status = 'resume-pending', last_error = ?, updated_at = ?
-        WHERE write_target_node_id = ?
-      `,
+        "DELETE FROM advanced_blocking_pauses WHERE write_target_node_id = ?",
       )
-      .run(error, new Date().toISOString(), writeTargetNodeId);
+      .run(targetKey);
   }
-
-  markPausePendingError(writeTargetNodeId: string, error: string): void {
+  private mark(
+    targetKey: string,
+    status: AdvancedBlockingPauseTargetStatus,
+    error: string,
+  ): void {
     this.requireDb()
       .prepare(
-        `
-        UPDATE advanced_blocking_pauses
-        SET last_error = ?, updated_at = ?
-        WHERE write_target_node_id = ?
-      `,
+        "UPDATE advanced_blocking_pauses SET status = ?, last_error = ?, updated_at = ? WHERE write_target_node_id = ?",
       )
-      .run(error, new Date().toISOString(), writeTargetNodeId);
+      .run(status, error, new Date().toISOString(), targetKey);
   }
-
-  remove(writeTargetNodeId: string): void {
-    this.requireDb()
-      .prepare(
-        `DELETE FROM advanced_blocking_pauses WHERE write_target_node_id = ?`,
-      )
-      .run(writeTargetNodeId);
-  }
-
   private requireDb() {
     const db = this.companionDb.db;
-    if (!db) {
+    if (!db)
       throw new Error(
         "Companion SQLite is unavailable; Advanced Blocking pauses cannot be managed safely.",
       );
-    }
     return db;
   }
-
   private toTarget(row: PauseRow): AdvancedBlockingPauseTarget {
     return {
       writeTargetNodeId: row.write_target_node_id,
+      anchorNodeId: row.anchor_node_id ?? row.write_target_node_id,
+      ...(row.last_resolved_node_id
+        ? { lastResolvedNodeId: row.last_resolved_node_id }
+        : {}),
       status: row.status,
       expiresAt: row.expires_at,
       ...(row.previous_enable_blocking_present === null

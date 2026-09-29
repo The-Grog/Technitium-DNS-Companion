@@ -57,12 +57,18 @@ export function PauseBlockingButton() {
   const usingAdvancedBlocking =
     technitium?.selectedBlockingMethod === "advanced";
   const advancedPause = technitium?.advancedBlockingPause;
+  const reloadAdvancedBlockingPause = technitium?.reloadAdvancedBlockingPause;
 
   useEffect(() => {
-    if (usingAdvancedBlocking) {
-      void technitium?.reloadAdvancedBlockingPause().catch(() => undefined);
-    }
-  }, [technitium, usingAdvancedBlocking]);
+    if (!usingAdvancedBlocking || !reloadAdvancedBlockingPause) return;
+    // The callback is stable; refresh on selection and at a bounded cadence so
+    // server-side expiry/retry is reflected without tying requests to context state.
+    void reloadAdvancedBlockingPause().catch(() => undefined);
+    const id = window.setInterval(() => {
+      void reloadAdvancedBlockingPause().catch(() => undefined);
+    }, 30_000);
+    return () => window.clearInterval(id);
+  }, [reloadAdvancedBlockingPause, usingAdvancedBlocking]);
 
   const { pausedNodes, latestPauseUntilMs } = useMemo(() => {
     let latest = 0;

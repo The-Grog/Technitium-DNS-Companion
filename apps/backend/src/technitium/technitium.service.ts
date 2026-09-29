@@ -165,8 +165,7 @@ type ZoneComparisonFieldAlways = (typeof ZONE_COMPARISON_FIELDS_ALWAYS)[number];
 type ZoneComparisonFieldConditional =
   (typeof ZONE_COMPARISON_FIELDS_CONDITIONAL)[number];
 type ZoneComparisonField =
-  | ZoneComparisonFieldAlways
-  | ZoneComparisonFieldConditional;
+  ZoneComparisonFieldAlways | ZoneComparisonFieldConditional;
 
 // Secondary forwarder types that don't have Zone Transfer/Notify settings
 const SECONDARY_FORWARDER_TYPES = new Set([
@@ -5616,8 +5615,7 @@ export class TechnitiumService {
         );
         const existsOnTarget = Boolean(existingTargetScope);
         let targetScopeDetails:
-          | import("./technitium.types").TechnitiumDhcpScope
-          | undefined;
+          import("./technitium.types").TechnitiumDhcpScope | undefined;
 
         if (existsOnTarget) {
           try {
@@ -6621,6 +6619,26 @@ export class TechnitiumService {
     return "interactive";
   }
 
+  /**
+   * Verify that the request session, rather than an unattended credential, is
+   * admitted for Apps: Modify on every effective configuration write target.
+   */
+  async assertSessionConfigWriteAccess(
+    candidateNodeIds: string[],
+  ): Promise<void> {
+    const summaries = await this.listNodes({ authMode: "session" });
+    const { perCandidate } = await this.resolveClusterWriteTargets(
+      candidateNodeIds,
+      summaries,
+    );
+    for (const nodeId of candidateNodeIds) {
+      if (!perCandidate.get(nodeId)?.writeTarget) {
+        throw new ForbiddenException(
+          `Technitium node "${nodeId}" is not admitted for Apps: Modify in this session.`,
+        );
+      }
+    }
+  }
   private assertSessionNodeAdmitted(
     session: ReturnType<typeof AuthRequestContext.getSession>,
     node: TechnitiumNodeConfig,
