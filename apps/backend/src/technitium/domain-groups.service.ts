@@ -1793,7 +1793,11 @@ export class DomainGroupsService implements OnModuleInit {
             data.groups,
             domainsMode,
           );
-          await this.advancedBlockingService.setConfig(nodeId, newConfig);
+          await this.advancedBlockingService.setConfig(
+            nodeId,
+            newConfig,
+            snapshot.configRevision,
+          );
           result.domains.groupsUpdated = updatedGroups;
           result.domains.groupsSkipped = skippedGroups;
         }
