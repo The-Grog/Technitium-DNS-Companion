@@ -341,6 +341,7 @@ export class AdvancedBlockingService {
   async resolvePauseTarget(
     nodeId: string,
     authMode: "session" | "schedule",
+    requireValidatedPrimary = false,
   ): Promise<{ targetKey: string; writeNodeId: string }> {
     const topologyDouble = this.technitiumService as unknown as {
       resolveClusterWriteTargets?: unknown;
@@ -354,6 +355,7 @@ export class AdvancedBlockingService {
       await this.technitiumService.resolveClusterWriteTargets(
         [nodeId],
         summaries,
+        { requireValidatedPrimary },
       );
     const writeNodeId = perCandidate.get(nodeId)?.writeTarget;
     if (!writeNodeId)
@@ -379,9 +381,14 @@ export class AdvancedBlockingService {
   async activatePauseRoot(
     nodeId: string,
     authMode: "session" | "schedule",
+    beforeActivate?: (target: { targetKey: string; writeNodeId: string }) => void,
   ): Promise<void> {
     await this.withConfigMutation(nodeId, authMode, async (target) => {
+      beforeActivate?.(target);
       const current = this.requirePauseState().get(target.targetKey);
+      if (!current) {
+        throw new Error("Advanced Blocking pause ownership was removed before activation.");
+      }
       const { envelope } = await this.fetchConfigWithFallback(
         target.writeNodeId,
         authMode,
@@ -439,7 +446,7 @@ export class AdvancedBlockingService {
         previousPresent,
         previousValue,
       );
-    });
+    }, true);
   }
 
   /** Read the live root flag under the canonical mutation gate without writing. */
@@ -470,8 +477,10 @@ export class AdvancedBlockingService {
     previousValue: boolean | undefined,
     authMode: "session" | "schedule",
     onRestored: (targetKey: string) => void,
+    beforeRestore?: (target: { targetKey: string; writeNodeId: string }) => void,
   ): Promise<void> {
     await this.withConfigMutation(nodeId, authMode, async (target) => {
+      beforeRestore?.(target);
       const { envelope } = await this.fetchConfigWithFallback(
         target.writeNodeId,
         authMode,
@@ -483,24 +492,9 @@ export class AdvancedBlockingService {
         authMode,
       );
       onRestored(target.targetKey);
-    });
+    }, true);
   }
 
-  private withConfigMutation<T>(
-    nodeId: string,
-    operation: (target: {
-      targetKey: string;
-      writeNodeId: string;
-    }) => Promise<T>,
-  ): Promise<T>;
-  private withConfigMutation<T>(
-    nodeId: string,
-    authMode: "session" | "schedule",
-    operation: (target: {
-      targetKey: string;
-      writeNodeId: string;
-    }) => Promise<T>,
-  ): Promise<T>;
   private async withConfigMutation<T>(
     nodeId: string,
     authModeOrOperation:
@@ -511,6 +505,7 @@ export class AdvancedBlockingService {
       targetKey: string;
       writeNodeId: string;
     }) => Promise<T>,
+      requireValidatedPrimary = false,
   ): Promise<T> {
     const authMode =
       typeof authModeOrOperation === "function"
@@ -522,7 +517,11 @@ export class AdvancedBlockingService {
         : maybeOperation;
     if (!operation)
       throw new Error("Advanced Blocking mutation operation is required.");
-    const target = await this.resolvePauseTarget(nodeId, authMode);
+    const target = await this.resolvePauseTarget(
+      nodeId,
+      authMode,
+      requireValidatedPrimary,
+    );
     const previous =
       this.mutationTails.get(target.targetKey) ?? Promise.resolve();
     let release!: () => void;

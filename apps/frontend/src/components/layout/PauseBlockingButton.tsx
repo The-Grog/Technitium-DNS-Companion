@@ -54,13 +54,33 @@ export function PauseBlockingButton() {
     () => builtInBlockingNodes ?? [],
     [builtInBlockingNodes],
   );
-  const usingAdvancedBlocking =
-    technitium?.selectedBlockingMethod === "advanced";
   const advancedPause = technitium?.advancedBlockingPause;
+  // Effective method is evaluated per node. An installed but disabled app is
+  // still handled by Built-in Blocking, regardless of the saved UI preference.
+  const advancedEffectiveNodeIds = useMemo(
+    () =>
+      new Set(
+        (technitium?.blockingStatus?.nodes ?? [])
+          .filter(
+            (node) =>
+              node.advancedBlockingInstalled && node.advancedBlockingEnabled,
+          )
+          .map((node) => node.nodeId),
+      ),
+    [technitium?.blockingStatus?.nodes],
+  );
+  const usingAdvancedBlocking = advancedEffectiveNodeIds.size > 0;
+  // Once Companion owns a pause, the live root flag is deliberately false.
+  // Ownership—not that transient effective-method signal—controls extension
+  // and resume requests until the durable row is cleared.
+  const hasAdvancedPauseOwnership =
+    (advancedPause?.targets.length ?? 0) > 0;
+  const shouldManageAdvancedBlocking =
+    usingAdvancedBlocking || hasAdvancedPauseOwnership;
   const reloadAdvancedBlockingPause = technitium?.reloadAdvancedBlockingPause;
 
   useEffect(() => {
-    if (!usingAdvancedBlocking || !reloadAdvancedBlockingPause) return;
+    if (!reloadAdvancedBlockingPause) return;
     // The callback is stable; refresh on selection and at a bounded cadence so
     // server-side expiry/retry is reflected without tying requests to context state.
     void reloadAdvancedBlockingPause().catch(() => undefined);
@@ -68,12 +88,13 @@ export function PauseBlockingButton() {
       void reloadAdvancedBlockingPause().catch(() => undefined);
     }, 30_000);
     return () => window.clearInterval(id);
-  }, [reloadAdvancedBlockingPause, usingAdvancedBlocking]);
+  }, [reloadAdvancedBlockingPause]);
 
   const { pausedNodes, latestPauseUntilMs } = useMemo(() => {
     let latest = 0;
     const paused: { nodeId: string; untilMs: number }[] = [];
     for (const snap of nodes) {
+      if (advancedEffectiveNodeIds.has(snap.nodeId)) continue;
       const raw = snap.metrics?.temporaryDisableBlockingTill;
       if (!raw) {
         continue;
@@ -88,7 +109,7 @@ export function PauseBlockingButton() {
       }
     }
     return { pausedNodes: paused, latestPauseUntilMs: latest };
-  }, [nodes]);
+  }, [advancedEffectiveNodeIds, nodes]);
 
   const advancedLatestPauseUntilMs = useMemo(
     () =>
@@ -100,12 +121,12 @@ export function PauseBlockingButton() {
       ),
     [advancedPause],
   );
-  const isPaused = usingAdvancedBlocking
-    ? Boolean(advancedPause?.paused)
-    : pausedNodes.length > 0;
-  const effectivePauseUntilMs = usingAdvancedBlocking
-    ? advancedLatestPauseUntilMs
-    : latestPauseUntilMs;
+  const advancedPaused = Boolean(advancedPause?.paused);
+  const isPaused = advancedPaused || pausedNodes.length > 0;
+  const effectivePauseUntilMs = Math.max(
+    advancedPaused ? advancedLatestPauseUntilMs : 0,
+    latestPauseUntilMs,
+  );
 
   useEffect(() => {
     if (!isPaused) {
@@ -145,7 +166,12 @@ export function PauseBlockingButton() {
   const targetNodeIdsForPause = useMemo(
     () =>
       nodes
-        .filter((snap) => snap.isHealthy && snap.metrics?.blockingEnabled)
+        .filter(
+          (snap) =>
+            snap.isHealthy &&
+            snap.metrics?.blockingEnabled &&
+            !advancedEffectiveNodeIds.has(snap.nodeId),
+        )
         .map((snap) => snap.nodeId),
     [nodes],
   );
@@ -156,7 +182,7 @@ export function PauseBlockingButton() {
       setMenuOpen(false);
       setBusy(true);
       try {
-        if (usingAdvancedBlocking) {
+        if (shouldManageAdvancedBlocking) {
           const status = await technitium.pauseAdvancedBlocking(minutes);
           await technitium.reloadAdvancedBlocking().catch(() => undefined);
           const errors = status.targets
@@ -176,14 +202,12 @@ export function PauseBlockingButton() {
               tone: "success",
             });
           }
-          return;
         }
-        if (targetNodeIdsForPause.length === 0) {
+        if (targetNodeIdsForPause.length === 0 && !shouldManageAdvancedBlocking) {
           pushToast({
             message: "No nodes with blocking enabled to pause.",
             tone: "info",
           });
-          return;
         }
         const errors: string[] = [];
         await Promise.all(
@@ -219,7 +243,7 @@ export function PauseBlockingButton() {
         setBusy(false);
       }
     },
-    [technitium, targetNodeIdsForPause, pushToast, usingAdvancedBlocking],
+    [technitium, targetNodeIdsForPause, pushToast, shouldManageAdvancedBlocking],
   );
 
   const handleResume = useCallback(async () => {
@@ -227,7 +251,7 @@ export function PauseBlockingButton() {
     setMenuOpen(false);
     setBusy(true);
     try {
-      if (usingAdvancedBlocking) {
+      if (shouldManageAdvancedBlocking) {
         const status = await technitium.resumeAdvancedBlocking();
         await technitium.reloadAdvancedBlocking().catch(() => undefined);
         const errors = status.targets
@@ -241,7 +265,6 @@ export function PauseBlockingButton() {
               }
             : { message: "Advanced Blocking resumed.", tone: "success" },
         );
-        return;
       }
       const errors: string[] = [];
       await Promise.all(
@@ -272,7 +295,7 @@ export function PauseBlockingButton() {
     } finally {
       setBusy(false);
     }
-  }, [technitium, pausedNodes, pushToast, usingAdvancedBlocking]);
+  }, [technitium, pausedNodes, pushToast, shouldManageAdvancedBlocking]);
   const anyBlockingEnabled = useMemo(
     () => nodes.some((snap) => snap.isHealthy && snap.metrics?.blockingEnabled),
     [nodes],
@@ -280,16 +303,20 @@ export function PauseBlockingButton() {
 
   const anyAdvancedEnabled = Boolean(
     technitium?.blockingStatus?.nodes.some(
-      (node) => node.advancedBlockingEnabled,
+      (node) =>
+        node.advancedBlockingInstalled && node.advancedBlockingEnabled,
     ),
   );
 
-  if (!technitium || (!usingAdvancedBlocking && nodes.length === 0)) {
+  if (
+    !technitium ||
+    (!usingAdvancedBlocking && nodes.length === 0 && !advancedPause)
+  ) {
     return null;
   }
 
   if (
-    !(usingAdvancedBlocking ? anyAdvancedEnabled : anyBlockingEnabled) &&
+    !(anyAdvancedEnabled || anyBlockingEnabled) &&
     !isPaused
   ) {
     return null;

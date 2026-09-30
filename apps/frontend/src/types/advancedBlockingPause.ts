@@ -1,5 +1,5 @@
 export type AdvancedBlockingPauseTargetStatus =
-  | "pause-pending"
+  | "activation-pending"
   | "active"
   | "resume-pending";
 
@@ -15,5 +15,7 @@ export interface AdvancedBlockingPauseTarget {
 
 export interface AdvancedBlockingPauseStatus {
   paused: boolean;
+  confirmedPausedTargetCount: number;
+  pendingTargetCount: number;
   targets: AdvancedBlockingPauseTarget[];
 }

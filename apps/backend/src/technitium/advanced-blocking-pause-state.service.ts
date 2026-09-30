@@ -137,16 +137,19 @@ export class AdvancedBlockingPauseStateService implements OnModuleInit {
         new Date().toISOString(),
         targetKey,
       );
+    if (this.requireDb().prepare("SELECT 1 FROM advanced_blocking_pauses WHERE write_target_node_id = ?").get(targetKey) === undefined) {
+      throw new Error("Advanced Blocking pause ownership was removed before its baseline could be recorded.");
+    }
   }
 
   markVerified(targetKey: string, resolvedNodeId: string): void {
     this.requireDb()
       .prepare(
         `UPDATE advanced_blocking_pauses
-          SET last_resolved_node_id = ?, last_error = NULL, updated_at = ?
+          SET last_resolved_node_id = ?, last_error = NULL
           WHERE write_target_node_id = ?`,
       )
-      .run(resolvedNodeId, new Date().toISOString(), targetKey);
+      .run(resolvedNodeId, targetKey);
   }
   activate(
     targetKey: string,
@@ -165,6 +168,19 @@ export class AdvancedBlockingPauseStateService implements OnModuleInit {
         new Date().toISOString(),
         targetKey,
       );
+    if (this.requireDb().prepare("SELECT 1 FROM advanced_blocking_pauses WHERE write_target_node_id = ?").get(targetKey) === undefined) {
+      throw new Error("Advanced Blocking pause ownership was removed before activation could be recorded.");
+    }
+  }
+  /** Adopt a validated replacement Primary without changing pause ownership. */
+  adoptResolvedAnchor(targetKey: string, resolvedNodeId: string): void {
+    this.requireDb()
+      .prepare(
+        `UPDATE advanced_blocking_pauses
+          SET anchor_node_id = ?, last_resolved_node_id = ?
+          WHERE write_target_node_id = ?`,
+      )
+      .run(resolvedNodeId, resolvedNodeId, targetKey);
   }
   migrateLegacyKey(oldTargetKey: string, newTargetKey: string): void {
     if (oldTargetKey === newTargetKey) return;
