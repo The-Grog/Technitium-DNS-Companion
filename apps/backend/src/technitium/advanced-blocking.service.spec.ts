@@ -145,6 +145,11 @@ describe("AdvancedBlockingService JSONC integration", () => {
     const technitiumService = {
       executeAction,
       listNodes,
+      resolveClusterWriteTargets: jest.fn((ids: string[]) =>
+        Promise.resolve({
+          perCandidate: new Map(ids.map((id) => [id, { writeTarget: id }])),
+        }),
+      ),
     } as unknown as TechnitiumService;
     const service = new AdvancedBlockingService(technitiumService);
 
@@ -394,7 +399,14 @@ describe("AdvancedBlockingService pause root lifecycle", () => {
       },
     );
     const service = new AdvancedBlockingService(
-      { executeAction } as unknown as TechnitiumService,
+      {
+        executeAction,
+        listNodes: () => Promise.resolve([{ id: "node-a" }]),
+        resolveClusterWriteTargets: (ids: string[]) =>
+          Promise.resolve({
+            perCandidate: new Map(ids.map((id) => [id, { writeTarget: id }])),
+          }),
+      } as unknown as TechnitiumService,
       undefined,
       undefined,
       pauseState as never,
@@ -423,7 +435,7 @@ describe("AdvancedBlockingService pause root lifecycle", () => {
 });
 describe("AdvancedBlockingService strict topology writes", () => {
   const pauseState = () => ({
-    get: jest.fn(() => ({})),
+    get: jest.fn(() => ({ captureBeforeWrite: true })),
     captureOriginal: jest.fn(),
     activate: jest.fn(),
   });

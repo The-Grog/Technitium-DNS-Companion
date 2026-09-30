@@ -30,6 +30,7 @@ import type {
 } from "../auth/auth.types";
 import { getEnvOrFile } from "../utils/env-file";
 import { DhcpSnapshotService } from "./dhcp-snapshot.service";
+import { unwrapApiResponse } from "./technitium-api-response";
 import { TECHNITIUM_NODES_TOKEN } from "./technitium.constants";
 import {
   configuredGroupIds,
@@ -8081,32 +8082,7 @@ export class TechnitiumService {
     nodeId: string,
     context: string,
   ): T {
-    if (!envelope) {
-      throw new ServiceUnavailableException(
-        `Technitium DNS node "${nodeId}" returned no data while fetching ${context}.`,
-      );
-    }
-
-    if (envelope.status !== "ok") {
-      if (envelope.status === "invalid-token") {
-        throw new UnauthorizedException(
-          `Technitium DNS node "${nodeId}" rejected ${context}: invalid token.`,
-        );
-      }
-      const detail =
-        envelope.errorMessage ?? envelope.innerErrorMessage ?? "unknown error";
-      throw new ServiceUnavailableException(
-        `Technitium DNS node "${nodeId}" rejected ${context}: ${detail}.`,
-      );
-    }
-
-    if (envelope.response === undefined) {
-      throw new ServiceUnavailableException(
-        `Technitium DNS node "${nodeId}" did not include a response payload for ${context}.`,
-      );
-    }
-
-    return envelope.response;
+    return unwrapApiResponse(envelope, nodeId, context);
   }
 
   private normalizeAxiosError(

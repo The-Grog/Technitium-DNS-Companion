@@ -12,6 +12,8 @@ describe("AdvancedBlockingPauseService", () => {
       migrateLegacyKey: jest.fn(),
       adoptResolvedAnchor: jest.fn(),
       markVerified: jest.fn(),
+      requestResume: jest.fn(),
+      markVerificationFailed: jest.fn(),
     };
     const advancedBlocking = {
       resolvePauseTarget: jest.fn(),
@@ -100,6 +102,7 @@ describe("AdvancedBlockingPauseService", () => {
     expect(pauseState.markResumePending).toHaveBeenCalledWith(
       "node:primary",
       expect.stringContaining("incomplete"),
+      target.updatedAt,
     );
   });
 
@@ -143,6 +146,7 @@ describe("AdvancedBlockingPauseService", () => {
     expect(pauseState.markResumePending).toHaveBeenCalledWith(
       target.writeTargetNodeId,
       expect.stringContaining("changed"),
+      target.updatedAt,
     );
   });
   it("adopts a recovered Primary before canonical-row operations continue", async () => {
@@ -339,6 +343,7 @@ describe("AdvancedBlockingPauseService", () => {
       updatedAt: "2029-01-01T00:00:00.000Z",
     };
     pauseState.list.mockReturnValue([target]);
+    pauseState.get.mockReturnValue(target);
     advancedBlocking.resolvePauseTarget.mockResolvedValue({
       targetKey: target.writeTargetNodeId,
       writeNodeId: "dns2",

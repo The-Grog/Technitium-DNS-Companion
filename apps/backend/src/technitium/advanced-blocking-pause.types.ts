@@ -18,6 +18,7 @@ export interface AdvancedBlockingPauseTarget {
   lastResolvedNodeId?: string;
   status: AdvancedBlockingPauseTargetStatus;
   expiresAt: string;
+  captureBeforeWrite?: boolean;
   previousEnableBlockingPresent?: boolean;
   previousEnableBlockingValue?: boolean;
   lastError?: string;
@@ -30,6 +31,7 @@ export interface AdvancedBlockingPauseStatus {
   confirmedPausedTargetCount: number;
   pendingTargetCount: number;
   targets: AdvancedBlockingPauseTarget[];
+  probeErrors?: Array<{ nodeId: string; error: string }>;
 }
 
 export interface AdvancedBlockingPauseOperationResult extends AdvancedBlockingPauseStatus {

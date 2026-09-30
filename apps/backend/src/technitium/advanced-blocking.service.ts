@@ -6,6 +6,7 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  ServiceUnavailableException,
 } from "@nestjs/common";
 import {
   applyAdvancedBlockingJsoncChanges,
@@ -36,10 +37,13 @@ import { AdvancedBlockingPauseStateService } from "./advanced-blocking-pause-sta
 import { DnsFilteringSnapshotService } from "./dns-filtering-snapshot.service";
 import { QueryLogSqliteService } from "./query-log-sqlite.service";
 import { TechnitiumService } from "./technitium.service";
+import { unwrapApiResponse } from "./technitium-api-response";
 import type { TechnitiumNodeSummary } from "./technitium.types";
 
 interface TechnitiumAppConfigEnvelope {
   status?: string;
+  errorMessage?: string;
+  innerErrorMessage?: string;
   response?: { config?: string | null };
 }
 
@@ -341,15 +345,8 @@ export class AdvancedBlockingService {
   async resolvePauseTarget(
     nodeId: string,
     authMode: "session" | "schedule",
-    requireValidatedPrimary = false,
+    requireValidatedPrimary = true,
   ): Promise<{ targetKey: string; writeNodeId: string }> {
-    const topologyDouble = this.technitiumService as unknown as {
-      resolveClusterWriteTargets?: unknown;
-    };
-    if (typeof topologyDouble.resolveClusterWriteTargets !== "function") {
-      // Minimal service doubles used by isolated JSONC tests do not model topology.
-      return { targetKey: `node:${nodeId.toLowerCase()}`, writeNodeId: nodeId };
-    }
     const summaries = await this.technitiumService.listNodes({ authMode });
     const { perCandidate } =
       await this.technitiumService.resolveClusterWriteTargets(
@@ -395,6 +392,14 @@ export class AdvancedBlockingService {
         if (!current) {
           throw new Error(
             "Advanced Blocking pause ownership was removed before activation.",
+          );
+        }
+        if (
+          current.previousEnableBlockingPresent === undefined &&
+          !current.captureBeforeWrite
+        ) {
+          throw new ConflictException(
+            "Legacy pause has no original root state; manual recovery is required.",
           );
         }
         const { envelope } = await this.fetchConfigWithFallback(
@@ -497,6 +502,21 @@ export class AdvancedBlockingService {
       authMode,
       async (target) => {
         beforeRestore?.(target);
+        const ownership = this.requirePauseState().get(target.targetKey);
+        if (!ownership)
+          throw new ConflictException(
+            "Advanced Blocking pause ownership was removed before resume.",
+          );
+        if (ownership.previousEnableBlockingPresent === undefined) {
+          if (!ownership.captureBeforeWrite) {
+            throw new ConflictException(
+              "Legacy pause has no original root state; manual recovery is required.",
+            );
+          }
+          // New-format intents capture before any remote write.
+          onRestored(target.targetKey);
+          return;
+        }
         const { envelope } = await this.fetchConfigWithFallback(
           target.writeNodeId,
           authMode,
@@ -507,6 +527,21 @@ export class AdvancedBlockingService {
           patchAdvancedBlockingRootEnableBlocking(rawConfig, previousValue),
           authMode,
         );
+        const { envelope: restored } = await this.fetchConfigWithFallback(
+          target.writeNodeId,
+          authMode,
+        );
+        const root = parseAdvancedBlockingJsonc(
+          restored.response!.config!,
+        ) as Record<string, unknown>;
+        const matches =
+          previousValue === undefined
+            ? !Object.hasOwn(root, "enableBlocking")
+            : root.enableBlocking === previousValue;
+        if (!matches)
+          throw new ConflictException(
+            "Advanced Blocking restore could not be confirmed; retaining pause ownership.",
+          );
         onRestored(target.targetKey);
       },
       true,
@@ -523,7 +558,7 @@ export class AdvancedBlockingService {
       targetKey: string;
       writeNodeId: string;
     }) => Promise<T>,
-    requireValidatedPrimary = false,
+    requireValidatedPrimary = true,
   ): Promise<T> {
     const authMode =
       typeof authModeOrOperation === "function"
@@ -549,7 +584,20 @@ export class AdvancedBlockingService {
     this.mutationTails.set(target.targetKey, current);
     await previous.catch(() => undefined);
     try {
-      return await operation(target);
+      const currentTarget = await this.resolvePauseTarget(
+        nodeId,
+        authMode,
+        true,
+      );
+      if (
+        currentTarget.targetKey !== target.targetKey ||
+        currentTarget.writeNodeId !== target.writeNodeId
+      ) {
+        throw new ConflictException(
+          "Advanced Blocking write target changed while waiting; retry against the current Primary.",
+        );
+      }
+      return await operation(currentTarget);
     } finally {
       release();
       if (this.mutationTails.get(target.targetKey) === current)
@@ -562,7 +610,43 @@ export class AdvancedBlockingService {
       throw new Error("Advanced Blocking pause state is unavailable.");
     return this.pauseState;
   }
+  /** Read sync state without exporting a Companion-owned temporary override. */
+  async getConfigSyncSnapshot(
+    nodeId: string,
+  ): Promise<AdvancedBlockingSnapshot> {
+    return this.withConfigMutation(nodeId, "schedule", async (target) => {
+      const snapshot = await this.getSnapshotWithAuth(
+        target.writeNodeId,
+        "schedule",
+      );
+      const ownership = this.pauseState?.get(target.targetKey);
+      if (!snapshot.config || !ownership) return snapshot;
+      if (ownership.previousEnableBlockingPresent === undefined) {
+        if (!ownership.captureBeforeWrite)
+          throw new ConflictException(
+            "Cannot synchronize an unresolved legacy pause.",
+          );
+        return snapshot;
+      }
+      const config = { ...snapshot.config };
+      if (ownership.previousEnableBlockingPresent)
+        config.enableBlocking = ownership.previousEnableBlockingValue;
+      else delete config.enableBlocking;
+      return { ...snapshot, config };
+    });
+  }
+
   private enforceActivePause(targetKey: string, rawConfig: string): string {
+    const ownership = this.pauseState?.get(targetKey);
+    if (
+      ownership &&
+      ownership.previousEnableBlockingPresent === undefined &&
+      !ownership.captureBeforeWrite
+    ) {
+      throw new ConflictException(
+        "Legacy pause has no original root state; resolve it before editing configuration.",
+      );
+    }
     return this.pauseState?.isEnforced(targetKey) === true
       ? patchAdvancedBlockingRootEnableBlocking(rawConfig, false)
       : rawConfig;
@@ -642,6 +726,23 @@ export class AdvancedBlockingService {
             { authMode },
           );
 
+        const payload = unwrapApiResponse(
+          envelope,
+          nodeId,
+          "Advanced Blocking config",
+        );
+        const raw = payload.config;
+        if (typeof raw !== "string" || !raw.trim()) {
+          throw new ServiceUnavailableException(
+            "Advanced Blocking returned no configuration; refusing to replace it.",
+          );
+        }
+        const parsed = parseAdvancedBlockingJsonc(raw);
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+          throw new ServiceUnavailableException(
+            "Advanced Blocking configuration is not an object.",
+          );
+        }
         return { envelope, appName };
       } catch (error) {
         lastError = error instanceof Error ? error : new Error(String(error));
@@ -691,16 +792,23 @@ export class AdvancedBlockingService {
 
     for (const appName of appNames) {
       try {
-        await this.technitiumService.executeAction(
+        const result =
+          await this.technitiumService.executeAction<TechnitiumAppConfigEnvelope>(
+            nodeId,
+            {
+              method: "POST",
+              url: "/api/apps/config/set",
+              params: { name: appName },
+              headers: { "Content-Type": "application/x-www-form-urlencoded" },
+              body: body.toString(),
+            },
+            { authMode },
+          );
+        unwrapApiResponse(
+          result,
           nodeId,
-          {
-            method: "POST",
-            url: "/api/apps/config/set",
-            params: { name: appName },
-            headers: { "Content-Type": "application/x-www-form-urlencoded" },
-            body: body.toString(),
-          },
-          { authMode },
+          "saving Advanced Blocking config",
+          true,
         );
         this.appNameByNode.set(nodeId, appName);
         return;

@@ -73,8 +73,7 @@ export function PauseBlockingButton() {
   // Once Companion owns a pause, the live root flag is deliberately false.
   // Ownership—not that transient effective-method signal—controls extension
   // and resume requests until the durable row is cleared.
-  const hasAdvancedPauseOwnership =
-    (advancedPause?.targets.length ?? 0) > 0;
+  const hasAdvancedPauseOwnership = (advancedPause?.targets.length ?? 0) > 0;
   const shouldManageAdvancedBlocking =
     usingAdvancedBlocking || hasAdvancedPauseOwnership;
   const reloadAdvancedBlockingPause = technitium?.reloadAdvancedBlockingPause;
@@ -94,13 +93,12 @@ export function PauseBlockingButton() {
     let latest = 0;
     const paused: { nodeId: string; untilMs: number }[] = [];
     for (const snap of nodes) {
-      if (advancedEffectiveNodeIds.has(snap.nodeId)) continue;
       const raw = snap.metrics?.temporaryDisableBlockingTill;
       if (!raw) {
         continue;
       }
       const parsed = Date.parse(raw);
-      if (Number.isNaN(parsed) || parsed <= Date.now()) {
+      if (Number.isNaN(parsed) || parsed <= now) {
         continue;
       }
       paused.push({ nodeId: snap.nodeId, untilMs: parsed });
@@ -109,20 +107,24 @@ export function PauseBlockingButton() {
       }
     }
     return { pausedNodes: paused, latestPauseUntilMs: latest };
-  }, [advancedEffectiveNodeIds, nodes]);
+  }, [nodes, now]);
 
   const advancedLatestPauseUntilMs = useMemo(
     () =>
       Math.max(
         0,
-        ...(advancedPause?.targets.map((target) =>
-          Date.parse(target.expiresAt),
-        ) ?? []),
+        ...(advancedPause?.targets
+          .filter((target) => target.status === "active" && !target.lastError)
+          .map((target) => Date.parse(target.expiresAt)) ?? []),
       ),
     [advancedPause],
   );
   const advancedPaused = Boolean(advancedPause?.paused);
   const isPaused = advancedPaused || pausedNodes.length > 0;
+  const needsAttention =
+    (advancedPause?.pendingTargetCount ?? 0) > 0 ||
+    (advancedPause?.probeErrors?.length ?? 0) > 0;
+  const canResume = isPaused || hasAdvancedPauseOwnership;
   const effectivePauseUntilMs = Math.max(
     advancedPaused ? advancedLatestPauseUntilMs : 0,
     latestPauseUntilMs,
@@ -169,11 +171,11 @@ export function PauseBlockingButton() {
         .filter(
           (snap) =>
             snap.isHealthy &&
-            snap.metrics?.blockingEnabled &&
-            !advancedEffectiveNodeIds.has(snap.nodeId),
+            (snap.metrics?.blockingEnabled ||
+              pausedNodes.some((paused) => paused.nodeId === snap.nodeId)),
         )
         .map((snap) => snap.nodeId),
-    [nodes, advancedEffectiveNodeIds],
+    [nodes, pausedNodes],
   );
 
   const handlePause = useCallback(
@@ -186,20 +188,23 @@ export function PauseBlockingButton() {
           try {
             const status = await technitium.pauseAdvancedBlocking(minutes);
             await technitium.reloadAdvancedBlocking().catch(() => undefined);
-            const errors = status.targets
-              .filter((target) => target.lastError)
-              .map(
-                (target) => `${target.writeTargetNodeId}: ${target.lastError}`,
-              );
+            const errors = [
+              ...status.targets
+                .filter((target) => target.lastError)
+                .map(
+                  (target) =>
+                    `${target.writeTargetNodeId}: ${target.lastError}`,
+                ),
+              ...(status.probeErrors ?? []).map(
+                (failure) => `${failure.nodeId}: ${failure.error}`,
+              ),
+            ];
             if (errors.length) {
               pushToast({
                 message: `Paused with errors: ${errors.join("; ")}`,
                 tone: "error",
               });
-            } else if (
-              status.paused &&
-              status.confirmedPausedTargetCount > 0
-            ) {
+            } else if (status.paused && status.confirmedPausedTargetCount > 0) {
               const preset = DURATION_PRESETS.find(
                 (p) => p.minutes === minutes,
               );
@@ -252,7 +257,7 @@ export function PauseBlockingButton() {
         } else {
           const preset = DURATION_PRESETS.find((p) => p.minutes === minutes);
           pushToast({
-            message: `Blocking paused for ${preset?.label ?? `${minutes} min`}.`,
+            message: `Built-in Blocking paused for ${preset?.label ?? `${minutes} min`}.`,
             tone: "success",
           });
         }
@@ -260,59 +265,72 @@ export function PauseBlockingButton() {
         setBusy(false);
       }
     },
-    [technitium, targetNodeIdsForPause, pushToast, shouldManageAdvancedBlocking],
+    [
+      technitium,
+      targetNodeIdsForPause,
+      pushToast,
+      shouldManageAdvancedBlocking,
+    ],
   );
 
   const handleResume = useCallback(async () => {
     if (!technitium) return;
     setMenuOpen(false);
     setBusy(true);
+    const errors: string[] = [];
+    let resumed = 0;
     try {
-      if (shouldManageAdvancedBlocking) {
-        const status = await technitium.resumeAdvancedBlocking();
-        await technitium.reloadAdvancedBlocking().catch(() => undefined);
-        const errors = status.targets
-          .filter((target) => target.lastError)
-          .map((target) => `${target.writeTargetNodeId}: ${target.lastError}`);
-        pushToast(
-          errors.length
-            ? {
-                message: `Resume failed for some nodes: ${errors.join("; ")}`,
-                tone: "error",
-              }
-            : { message: "Advanced Blocking resumed.", tone: "success" },
-        );
-      }
-      const errors: string[] = [];
-      await Promise.all(
-        pausedNodes.map(async ({ nodeId }) => {
+      // Each method must finish independently, including when another request
+      // is forbidden or temporarily unavailable.
+      await Promise.all([
+        (async () => {
+          if (!hasAdvancedPauseOwnership) return;
           try {
-            await technitium.reEnableBlocking(nodeId);
+            const status = await technitium.resumeAdvancedBlocking();
+            if (status.targets.length) {
+              errors.push(
+                ...status.targets.map(
+                  (target) =>
+                    target.writeTargetNodeId +
+                    ": " +
+                    (target.lastError ?? "resume is still pending"),
+                ),
+              );
+            } else resumed++;
+            await technitium.reloadAdvancedBlocking().catch(() => undefined);
           } catch (error) {
             errors.push(
-              `${nodeId}: ${error instanceof Error ? error.message : "failed"}`,
+              "Advanced Blocking: " +
+                (error instanceof Error ? error.message : "failed"),
+            );
+          }
+        })(),
+        ...pausedNodes.map(async ({ nodeId }) => {
+          try {
+            await technitium.reEnableBlocking(nodeId);
+            resumed++;
+          } catch (error) {
+            errors.push(
+              nodeId +
+                ": " +
+                (error instanceof Error ? error.message : "failed"),
             );
           }
         }),
-      );
+      ]);
       await technitium.reloadBuiltInBlocking().catch(() => undefined);
-      pushToast(
-        errors.length
-          ? {
-              message: `Resume failed for some nodes: ${errors.join("; ")}`,
-              tone: "error",
-            }
-          : { message: "Blocking resumed.", tone: "success" },
-      );
-    } catch (error) {
-      pushToast({
-        message: `Failed to resume blocking: ${error instanceof Error ? error.message : "failed"}`,
-        tone: "error",
-      });
+      if (errors.length) {
+        pushToast({
+          message: "Resume incomplete: " + errors.join("; "),
+          tone: "error",
+        });
+      } else if (resumed > 0) {
+        pushToast({ message: "Blocking resumed.", tone: "success" });
+      }
     } finally {
       setBusy(false);
     }
-  }, [technitium, pausedNodes, pushToast, shouldManageAdvancedBlocking]);
+  }, [technitium, pausedNodes, pushToast, hasAdvancedPauseOwnership]);
   const anyBlockingEnabled = useMemo(
     () => nodes.some((snap) => snap.isHealthy && snap.metrics?.blockingEnabled),
     [nodes],
@@ -320,8 +338,7 @@ export function PauseBlockingButton() {
 
   const anyAdvancedEnabled = Boolean(
     technitium?.blockingStatus?.nodes.some(
-      (node) =>
-        node.advancedBlockingInstalled && node.advancedBlockingEnabled,
+      (node) => node.advancedBlockingInstalled && node.advancedBlockingEnabled,
     ),
   );
 
@@ -332,10 +349,7 @@ export function PauseBlockingButton() {
     return null;
   }
 
-  if (
-    !(anyAdvancedEnabled || anyBlockingEnabled) &&
-    !isPaused
-  ) {
+  if (!(anyAdvancedEnabled || anyBlockingEnabled) && !canResume) {
     return null;
   }
 
@@ -364,12 +378,16 @@ export function PauseBlockingButton() {
         aria-label={
           isPaused
             ? `Blocking paused, ${countdownLabel} remaining`
-            : "Pause blocking"
+            : needsAttention
+              ? "Blocking needs attention"
+              : "Pause blocking"
         }
         title={
           isPaused
             ? `Blocking paused — ${countdownLabel} remaining`
-            : "Pause DNS blocking"
+            : needsAttention
+              ? "Blocking needs attention"
+              : "Pause DNS blocking"
         }
       >
         <FontAwesomeIcon
@@ -379,9 +397,13 @@ export function PauseBlockingButton() {
         <span className="app-header__pause-label">
           {busy
             ? "Working…"
-            : isPaused
-              ? `Paused · ${countdownLabel}`
-              : "Active"}
+            : needsAttention
+              ? isPaused
+                ? `Partially paused · ${countdownLabel}`
+                : "Needs attention"
+              : isPaused
+                ? `Paused · ${countdownLabel}`
+                : "Active"}
         </span>
         <FontAwesomeIcon
           icon={faCaretDown}
@@ -390,7 +412,7 @@ export function PauseBlockingButton() {
       </button>
       {menuOpen && (
         <div className="app-header__pause-menu" role="menu">
-          {isPaused && (
+          {canResume && (
             <>
               <button
                 type="button"
@@ -409,7 +431,7 @@ export function PauseBlockingButton() {
               </div>
             </>
           )}
-          {!isPaused && (
+          {!canResume && (
             <div className="app-header__actions-group-label">
               Pause blocking for
             </div>

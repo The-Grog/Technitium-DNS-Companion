@@ -9,6 +9,18 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- Advanced Blocking pauses now validate API responses, verify restoration before
+  releasing ownership, and retry early resume requests after failures or restart.
+- All Advanced Blocking writers require confirmed topology and revalidate the
+  Primary after waiting for the shared mutation gate. Configuration Sync copies
+  configured root state without propagating Companion's temporary pause override.
+- Expired uncaptured pause intents cancel safely; ambiguous legacy baselines remain
+  visible for manual recovery without imposing a new disabled root flag.
+- The header handles both blocking methods on the same node, retains recovery
+  controls, and reports partial failures without contradictory success messages.
+
 ## [1.12.0] - 2026-09-22
 
 ### Added

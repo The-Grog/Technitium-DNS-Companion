@@ -3,12 +3,26 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const state = vi.hoisted(() => ({ current: undefined as unknown }));
 const toast = vi.hoisted(() => ({ pushToast: vi.fn() }));
-vi.mock("../context/useTechnitiumState", () => ({ useOptionalTechnitiumState: () => state.current }));
+vi.mock("../context/useTechnitiumState", () => ({
+  useOptionalTechnitiumState: () => state.current,
+}));
 vi.mock("../context/useToast", () => ({ useToast: () => toast }));
 
 import { PauseBlockingButton } from "../components/layout/PauseBlockingButton";
 
-const pause = { paused: true, confirmedPausedTargetCount: 1, pendingTargetCount: 0, targets: [{ writeTargetNodeId: "cluster:default:dns.example", status: "active" as const, expiresAt: "2030-01-01T00:00:00.000Z", updatedAt: "2030-01-01T00:00:00.000Z" }] };
+const pause = {
+  paused: true,
+  confirmedPausedTargetCount: 1,
+  pendingTargetCount: 0,
+  targets: [
+    {
+      writeTargetNodeId: "cluster:default:dns.example",
+      status: "active" as const,
+      expiresAt: "2030-01-01T00:00:00.000Z",
+      updatedAt: "2030-01-01T00:00:00.000Z",
+    },
+  ],
+};
 
 describe("PauseBlockingButton", () => {
   beforeEach(() => {
@@ -45,8 +59,29 @@ describe("PauseBlockingButton", () => {
   });
   it("keeps a confirmed Advanced pause visible after its live root flag is false", async () => {
     const reloadAdvancedBlockingPause = vi.fn().mockResolvedValue(undefined);
-    const resumeAdvancedBlocking = vi.fn().mockResolvedValue({ ...pause, paused: false, confirmedPausedTargetCount: 0, targets: [] });
-    state.current = { blockingStatus: { nodes: [{ nodeId: "advanced", advancedBlockingInstalled: true, advancedBlockingEnabled: false }] }, advancedBlockingPause: pause, reloadAdvancedBlockingPause, resumeAdvancedBlocking, reloadAdvancedBlocking: vi.fn().mockResolvedValue(undefined), reloadBuiltInBlocking: vi.fn().mockResolvedValue(undefined), builtInBlocking: { nodes: [] } };
+    const resumeAdvancedBlocking = vi.fn().mockResolvedValue({
+      ...pause,
+      paused: false,
+      confirmedPausedTargetCount: 0,
+      targets: [],
+    });
+    state.current = {
+      blockingStatus: {
+        nodes: [
+          {
+            nodeId: "advanced",
+            advancedBlockingInstalled: true,
+            advancedBlockingEnabled: false,
+          },
+        ],
+      },
+      advancedBlockingPause: pause,
+      reloadAdvancedBlockingPause,
+      resumeAdvancedBlocking,
+      reloadAdvancedBlocking: vi.fn().mockResolvedValue(undefined),
+      reloadBuiltInBlocking: vi.fn().mockResolvedValue(undefined),
+      builtInBlocking: { nodes: [] },
+    };
     render(<PauseBlockingButton />);
     expect(screen.getByText(/Paused/)).toBeInTheDocument();
     await waitFor(() => expect(reloadAdvancedBlockingPause).toHaveBeenCalled());
@@ -58,14 +93,53 @@ describe("PauseBlockingButton", () => {
   });
 
   it("resumes both effective methods in a mixed deployment", async () => {
-    const resumeAdvancedBlocking = vi.fn().mockResolvedValue({ ...pause, paused: false, confirmedPausedTargetCount: 0, targets: [] });
+    const resumeAdvancedBlocking = vi.fn().mockResolvedValue({
+      ...pause,
+      paused: false,
+      confirmedPausedTargetCount: 0,
+      targets: [],
+    });
     const reEnableBlocking = vi.fn().mockResolvedValue(undefined);
-    state.current = { blockingStatus: { nodes: [{ nodeId: "advanced", advancedBlockingInstalled: true, advancedBlockingEnabled: true }, { nodeId: "built-in", advancedBlockingInstalled: false, advancedBlockingEnabled: false }] }, advancedBlockingPause: pause, reloadAdvancedBlockingPause: vi.fn().mockResolvedValue(undefined), resumeAdvancedBlocking, reloadAdvancedBlocking: vi.fn().mockResolvedValue(undefined), reEnableBlocking, reloadBuiltInBlocking: vi.fn().mockResolvedValue(undefined), builtInBlocking: { nodes: [{ nodeId: "built-in", isHealthy: true, metrics: { temporaryDisableBlockingTill: "2030-01-01T00:00:00.000Z" } }] } };
+    state.current = {
+      blockingStatus: {
+        nodes: [
+          {
+            nodeId: "advanced",
+            advancedBlockingInstalled: true,
+            advancedBlockingEnabled: true,
+          },
+          {
+            nodeId: "built-in",
+            advancedBlockingInstalled: false,
+            advancedBlockingEnabled: false,
+          },
+        ],
+      },
+      advancedBlockingPause: pause,
+      reloadAdvancedBlockingPause: vi.fn().mockResolvedValue(undefined),
+      resumeAdvancedBlocking,
+      reloadAdvancedBlocking: vi.fn().mockResolvedValue(undefined),
+      reEnableBlocking,
+      reloadBuiltInBlocking: vi.fn().mockResolvedValue(undefined),
+      builtInBlocking: {
+        nodes: [
+          {
+            nodeId: "built-in",
+            isHealthy: true,
+            metrics: {
+              temporaryDisableBlockingTill: "2030-01-01T00:00:00.000Z",
+            },
+          },
+        ],
+      },
+    };
     render(<PauseBlockingButton />);
     fireEvent.click(screen.getByRole("button", { name: /Blocking paused/i }));
     fireEvent.click(screen.getByRole("menuitem", { name: /Resume now/i }));
     await waitFor(() => expect(resumeAdvancedBlocking).toHaveBeenCalled());
-    await waitFor(() => expect(reEnableBlocking).toHaveBeenCalledWith("built-in"));
+    await waitFor(() =>
+      expect(reEnableBlocking).toHaveBeenCalledWith("built-in"),
+    );
   });
 
   it("does not report success for an unconfirmed Advanced Blocking pause or empty Built-in target set", async () => {
@@ -189,8 +263,204 @@ describe("PauseBlockingButton", () => {
       tone: "success",
     });
     expect(toast.pushToast).toHaveBeenCalledWith({
-      message: "Blocking paused for 5 minutes.",
+      message: "Built-in Blocking paused for 5 minutes.",
       tone: "success",
     });
+  });
+});
+
+describe("PauseBlockingButton recovery and mixed methods", () => {
+  beforeEach(() => {
+    toast.pushToast.mockReset();
+  });
+
+  function context() {
+    return {
+      blockingStatus: {
+        nodes: [
+          {
+            nodeId: "dns1",
+            advancedBlockingInstalled: true,
+            advancedBlockingEnabled: true,
+          },
+        ],
+      },
+      builtInBlocking: {
+        nodes: [
+          {
+            nodeId: "dns1",
+            isHealthy: true,
+            metrics: {
+              blockingEnabled: true,
+              temporaryDisableBlockingTill: undefined as string | undefined,
+            },
+          },
+        ],
+      },
+      advancedBlockingPause: undefined as typeof pause | undefined,
+      pauseAdvancedBlocking: vi.fn().mockResolvedValue(pause),
+      resumeAdvancedBlocking: vi.fn().mockResolvedValue({
+        paused: false,
+        confirmedPausedTargetCount: 0,
+        pendingTargetCount: 0,
+        targets: [],
+      }),
+      temporaryDisableBlocking: vi.fn().mockResolvedValue(undefined),
+      reEnableBlocking: vi.fn().mockResolvedValue(undefined),
+      reloadAdvancedBlocking: vi.fn().mockResolvedValue(undefined),
+      reloadAdvancedBlockingPause: vi.fn().mockResolvedValue(undefined),
+      reloadBuiltInBlocking: vi.fn().mockResolvedValue(undefined),
+    };
+  }
+
+  it("pauses both methods on the same node", async () => {
+    const ctx = context();
+    state.current = ctx;
+    render(<PauseBlockingButton />);
+    fireEvent.click(screen.getByRole("button", { name: "Pause blocking" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "5 minutes" }));
+    await waitFor(() =>
+      expect(ctx.pauseAdvancedBlocking).toHaveBeenCalledWith(5),
+    );
+    await waitFor(() =>
+      expect(ctx.temporaryDisableBlocking).toHaveBeenCalledWith("dns1", 5),
+    );
+  });
+
+  it("keeps failed restore ownership visible after reload", () => {
+    const ctx = context();
+    state.current = {
+      ...ctx,
+      builtInBlocking: { nodes: [] },
+      blockingStatus: {
+        nodes: [
+          {
+            nodeId: "dns1",
+            advancedBlockingInstalled: true,
+            advancedBlockingEnabled: false,
+          },
+        ],
+      },
+      advancedBlockingPause: {
+        paused: false,
+        confirmedPausedTargetCount: 0,
+        pendingTargetCount: 1,
+        targets: [
+          {
+            ...pause.targets[0],
+            status: "resume-pending",
+            lastError: "offline",
+          },
+        ],
+      },
+    };
+    render(<PauseBlockingButton />);
+    fireEvent.click(
+      screen.getByRole("button", { name: "Blocking needs attention" }),
+    );
+    expect(screen.getByText("Needs attention")).toBeInTheDocument();
+    expect(
+      screen.getByRole("menuitem", { name: "Resume now" }),
+    ).toBeInTheDocument();
+  });
+
+  it("resumes Built-in even when Advanced resume is rejected", async () => {
+    const ctx = context();
+    ctx.advancedBlockingPause = pause;
+    ctx.builtInBlocking.nodes[0].metrics.temporaryDisableBlockingTill =
+      "2030-01-01T00:00:00Z";
+    ctx.resumeAdvancedBlocking.mockRejectedValue(new Error("forbidden"));
+    state.current = ctx;
+    render(<PauseBlockingButton />);
+    fireEvent.click(screen.getByRole("button", { name: /Blocking paused/i }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Resume now" }));
+    await waitFor(() =>
+      expect(ctx.reEnableBlocking).toHaveBeenCalledWith("dns1"),
+    );
+    await waitFor(() =>
+      expect(toast.pushToast).toHaveBeenCalledWith(
+        expect.objectContaining({
+          tone: "error",
+          message: expect.stringContaining("forbidden"),
+        }),
+      ),
+    );
+    expect(toast.pushToast).not.toHaveBeenCalledWith(
+      expect.objectContaining({ tone: "success" }),
+    );
+  });
+
+  it("does not announce resume success when Advanced restore remains pending and no Built-in targets exist", async () => {
+    const ctx = context();
+    state.current = {
+      ...ctx,
+      builtInBlocking: { nodes: [] },
+      advancedBlockingPause: pause,
+      resumeAdvancedBlocking: vi.fn().mockResolvedValue({
+        paused: false,
+        pendingTargetCount: 1,
+        targets: [
+          {
+            ...pause.targets[0],
+            status: "resume-pending",
+            lastError: "restore failed",
+          },
+        ],
+      }),
+    };
+    render(<PauseBlockingButton />);
+    fireEvent.click(screen.getByRole("button", { name: /Blocking paused/i }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Resume now" }));
+    await waitFor(() =>
+      expect(toast.pushToast).toHaveBeenCalledWith(
+        expect.objectContaining({ tone: "error" }),
+      ),
+    );
+    expect(toast.pushToast).not.toHaveBeenCalledWith(
+      expect.objectContaining({ tone: "success" }),
+    );
+  });
+
+  it("reports unreadable Advanced targets instead of announcing complete success", async () => {
+    const ctx = context();
+    state.current = {
+      ...ctx,
+      builtInBlocking: { nodes: [] },
+      pauseAdvancedBlocking: vi.fn().mockResolvedValue({
+        ...pause,
+        probeErrors: [{ nodeId: "dns2", error: "offline" }],
+      }),
+    };
+    render(<PauseBlockingButton />);
+    fireEvent.click(screen.getByRole("button", { name: "Pause blocking" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "5 minutes" }));
+    await waitFor(() =>
+      expect(toast.pushToast).toHaveBeenCalledWith(
+        expect.objectContaining({
+          tone: "error",
+          message: expect.stringContaining("dns2: offline"),
+        }),
+      ),
+    );
+    expect(toast.pushToast).not.toHaveBeenCalledWith(
+      expect.objectContaining({ tone: "success" }),
+    );
+  });
+
+  it("extends a native pause even though its live blockingEnabled flag is false", async () => {
+    const ctx = context();
+    ctx.blockingStatus.nodes[0].advancedBlockingEnabled = false;
+    ctx.blockingStatus.nodes[0].advancedBlockingInstalled = false;
+    ctx.builtInBlocking.nodes[0].metrics.blockingEnabled = false;
+    ctx.builtInBlocking.nodes[0].metrics.temporaryDisableBlockingTill =
+      "2030-01-01T00:00:00Z";
+    state.current = ctx;
+    render(<PauseBlockingButton />);
+    fireEvent.click(screen.getByRole("button", { name: /Blocking paused/i }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "5 minutes" }));
+    await waitFor(() =>
+      expect(ctx.temporaryDisableBlocking).toHaveBeenCalledWith("dns1", 5),
+    );
+    expect(ctx.pauseAdvancedBlocking).not.toHaveBeenCalled();
   });
 });

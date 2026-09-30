@@ -1,4 +1,5 @@
 import { DatabaseSync } from "node:sqlite";
+import { AdvancedBlockingPauseStateService } from "./advanced-blocking-pause-state.service";
 import { AdvancedBlockingService } from "./advanced-blocking.service";
 import { DnsSchedulesEvaluatorService } from "./dns-schedules-evaluator.service";
 import { DnsSchedulesService } from "./dns-schedules.service";
@@ -6,6 +7,7 @@ import { DnsTemporaryOverridesService } from "./dns-temporary-overrides.service"
 
 describe("schedule configuration revisions", () => {
   let db: DatabaseSync;
+  let pauseState: AdvancedBlockingPauseStateService;
   let schedules: DnsSchedulesService;
   let overrides: DnsTemporaryOverridesService;
   let evaluator: DnsSchedulesEvaluatorService;
@@ -68,7 +70,14 @@ describe("schedule configuration revisions", () => {
         return Promise.resolve({ status: "ok" });
       },
     };
-    const blocking = new AdvancedBlockingService(transport as never);
+    pauseState = new AdvancedBlockingPauseStateService(owner as never);
+    pauseState.onModuleInit();
+    const blocking = new AdvancedBlockingService(
+      transport as never,
+      undefined,
+      undefined,
+      pauseState,
+    );
     evaluator = new DnsSchedulesEvaluatorService(
       schedules,
       blocking,
@@ -133,6 +142,19 @@ describe("schedule configuration revisions", () => {
     jest.setSystemTime(new Date("2026-09-05T12:06:00Z"));
     await evaluator.runNow(false);
     expect(writes).toBe(2);
+    expect(config.groups[0].allowed).toEqual([]);
+  });
+
+  it("keeps scheduled apply and expiry writes behind a pause-owned root", async () => {
+    pauseState.beginPause("node:primary", "primary", "2026-09-05T13:00:00Z");
+    pauseState.captureOriginal("node:primary", "primary", true, true);
+    pauseState.activate("node:primary", "primary", true, true);
+    expect((await evaluator.runNow(false)).errored).toBe(0);
+    expect(config.enableBlocking).toBe(false);
+    expect(config.groups[0].allowed).toEqual(["example.test"]);
+    jest.setSystemTime(new Date("2026-09-05T12:06:00Z"));
+    expect((await evaluator.runNow(false)).errored).toBe(0);
+    expect(config.enableBlocking).toBe(false);
     expect(config.groups[0].allowed).toEqual([]);
   });
 });

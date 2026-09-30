@@ -32,8 +32,8 @@ export class AdvancedBlockingPauseService
 
   onModuleInit(): void {
     if (process.env.NODE_ENV === "test") return;
-    this.timer = setInterval(() => void this.reconcile(), 15_000);
-    void this.reconcile();
+    this.timer = setInterval(() => void this.safeReconcile(), 15_000);
+    void this.safeReconcile();
   }
 
   onModuleDestroy(): void {
@@ -66,6 +66,7 @@ export class AdvancedBlockingPauseService
     // Topology summaries intentionally do not claim app capability. Probe the
     // live root through the canonical Advanced Blocking mutation path instead.
     const eligible: string[] = [];
+    const probeErrors: Array<{ nodeId: string; error: string }> = [];
     for (const node of interactiveNodes) {
       try {
         const live = await this.advancedBlockingService.verifyPauseRoot(
@@ -78,14 +79,29 @@ export class AdvancedBlockingPauseService
         if (!live.paused || this.pauseState.get(live.targetKey)) {
           eligible.push(node.id);
         }
-      } catch {
-        // An unavailable or unreadable app is never selected by guesswork.
+      } catch (error) {
+        // Only a successful inventory can establish that the app is absent.
+        try {
+          if (
+            !(await this.technitiumService.getNodeApps(node.id))
+              .hasAdvancedBlocking
+          )
+            continue;
+        } catch {
+          /* Keep unreadable nodes visible as unconfirmed targets. */
+        }
+        probeErrors.push({
+          nodeId: node.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
       }
     }
     if (eligible.length === 0) {
-      throw new BadRequestException(
-        "No eligible Advanced Blocking targets are available to pause.",
-      );
+      throw new BadRequestException({
+        message:
+          "No eligible Advanced Blocking targets are available to pause.",
+        probeErrors,
+      });
     }
 
     const expiresAt = new Date(Date.now() + minutes * 60_000).toISOString();
@@ -114,14 +130,17 @@ export class AdvancedBlockingPauseService
     }
 
     for (const [targetKey, target] of targets) {
-      await this.tryActivate(
+      const error = await this.tryActivate(
         targetKey,
         target.anchorNodeId,
         expiresAt,
         target.writeNodeId,
       );
+      if (error && !this.pauseState.get(targetKey)) {
+        probeErrors.push({ nodeId: target.anchorNodeId, error });
+      }
     }
-    return { ...this.getStatus(), requestedMinutes: minutes };
+    return { ...this.getStatus(), requestedMinutes: minutes, probeErrors };
   }
 
   async resumeNow(): Promise<AdvancedBlockingPauseOperationResult> {
@@ -150,9 +169,23 @@ export class AdvancedBlockingPauseService
       await this.technitiumService.assertSessionConfigWriteTargets([
         scheduleTarget.writeNodeId,
       ]);
-      await this.tryResume(target, scheduleTarget.writeNodeId);
+      this.pauseState.requestResume(target.writeTargetNodeId);
+      const requested = this.pauseState.get(target.writeTargetNodeId);
+      if (requested)
+        await this.tryResume(requested, scheduleTarget.writeNodeId);
     }
     return this.getStatus();
+  }
+
+  private async safeReconcile(): Promise<void> {
+    try {
+      await this.reconcile();
+    } catch (error) {
+      this.logger.error(
+        "Advanced Blocking pause reconciliation failed: " +
+          (error instanceof Error ? error.message : String(error)),
+      );
+    }
   }
 
   private async reconcile(): Promise<void> {
@@ -285,6 +318,11 @@ export class AdvancedBlockingPauseService
       await this.tryActivate(target.writeTargetNodeId, target.anchorNodeId);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      this.pauseState.markVerificationFailed(
+        target.writeTargetNodeId,
+        message,
+        target.updatedAt,
+      );
       this.logger.warn(
         `Failed to verify Advanced Blocking pause for "${target.writeTargetNodeId}": ${message}`,
       );
@@ -296,7 +334,7 @@ export class AdvancedBlockingPauseService
     anchorNodeId: string,
     expiresAt?: string,
     expectedWriteNodeId?: string,
-  ): Promise<void> {
+  ): Promise<string | undefined> {
     try {
       await this.advancedBlockingService.activatePauseRoot(
         anchorNodeId,
@@ -329,6 +367,7 @@ export class AdvancedBlockingPauseService
       this.logger.warn(
         `Failed to activate Advanced Blocking pause for "${targetKey}": ${message}`,
       );
+      return message;
     }
   }
 
@@ -336,22 +375,17 @@ export class AdvancedBlockingPauseService
     target: AdvancedBlockingPauseTarget,
     expectedWriteNodeId?: string,
   ): Promise<void> {
-    if (target.previousEnableBlockingPresent === undefined) {
-      this.pauseState.markResumePending(
-        target.writeTargetNodeId,
-        "Pause activation was never confirmed; retaining durable state for a safe retry.",
-      );
-      return;
-    }
     try {
-      const reconciliation = await this.schedulesEvaluator.runNow(false);
-      if (
-        reconciliation.errored > 0 ||
-        reconciliation.pendingRecoveryCount > 0
-      ) {
-        throw new Error(
-          "DNS Schedule reconciliation is incomplete; keeping Advanced Blocking paused.",
-        );
+      if (target.previousEnableBlockingPresent !== undefined) {
+        const reconciliation = await this.schedulesEvaluator.runNow(false);
+        if (
+          reconciliation.errored > 0 ||
+          reconciliation.pendingRecoveryCount > 0
+        ) {
+          throw new Error(
+            "DNS Schedule reconciliation is incomplete; keeping Advanced Blocking paused.",
+          );
+        }
       }
       await this.advancedBlockingService.restorePauseRoot(
         target.anchorNodeId,
@@ -392,7 +426,11 @@ export class AdvancedBlockingPauseService
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (this.pauseState.get(target.writeTargetNodeId)) {
-        this.pauseState.markResumePending(target.writeTargetNodeId, message);
+        this.pauseState.markResumePending(
+          target.writeTargetNodeId,
+          message,
+          target.updatedAt,
+        );
       }
       this.logger.warn(
         `Failed to resume Advanced Blocking for "${target.writeTargetNodeId}": ${message}`,

@@ -15,6 +15,7 @@ type PauseRow = {
   previous_enable_blocking_value: number | null;
   last_error: string | null;
   updated_at: string;
+  capture_before_write: number;
 };
 
 /** Durable state for Companion-owned root Advanced Blocking pauses. */
@@ -33,6 +34,7 @@ export class AdvancedBlockingPauseStateService implements OnModuleInit {
     }
     db.exec(`CREATE TABLE IF NOT EXISTS advanced_blocking_pauses (
       write_target_node_id TEXT PRIMARY KEY, anchor_node_id TEXT, last_resolved_node_id TEXT,
+      capture_before_write INTEGER NOT NULL DEFAULT 0,
       status TEXT NOT NULL CHECK (status IN ('activation-pending', 'active', 'resume-pending')),
       expires_at TEXT NOT NULL, previous_enable_blocking_present INTEGER CHECK (previous_enable_blocking_present IN (0, 1)),
       previous_enable_blocking_value INTEGER CHECK (previous_enable_blocking_value IN (0, 1)), last_error TEXT, updated_at TEXT NOT NULL);
@@ -77,6 +79,11 @@ export class AdvancedBlockingPauseStateService implements OnModuleInit {
         "UPDATE advanced_blocking_pauses SET anchor_node_id = write_target_node_id WHERE anchor_node_id IS NULL;",
       );
     }
+    if (!names.has("capture_before_write")) {
+      db.exec(
+        "ALTER TABLE advanced_blocking_pauses ADD COLUMN capture_before_write INTEGER NOT NULL DEFAULT 0;",
+      );
+    }
   }
   list(): AdvancedBlockingPauseTarget[] {
     return (
@@ -96,19 +103,13 @@ export class AdvancedBlockingPauseStateService implements OnModuleInit {
     return row ? this.toTarget(row) : undefined;
   }
   isEnforced(targetKey: string): boolean {
-    const status = this.get(targetKey)?.status;
-    return (
-      status === "active" ||
-      status === "resume-pending" ||
-      (status === "activation-pending" &&
-        this.get(targetKey)?.previousEnableBlockingPresent !== undefined)
-    );
+    return this.get(targetKey)?.previousEnableBlockingPresent !== undefined;
   }
   beginPause(targetKey: string, anchorNodeId: string, expiresAt: string): void {
     const now = new Date().toISOString();
     this.requireDb()
       .prepare(
-        `INSERT INTO advanced_blocking_pauses (write_target_node_id, anchor_node_id, status, expires_at, updated_at) VALUES (?, ?, 'activation-pending', ?, ?) ON CONFLICT(write_target_node_id) DO UPDATE SET anchor_node_id = excluded.anchor_node_id, expires_at = excluded.expires_at, status = CASE WHEN advanced_blocking_pauses.status = 'resume-pending' THEN 'activation-pending' ELSE advanced_blocking_pauses.status END, last_error = NULL, updated_at = excluded.updated_at`,
+        `INSERT INTO advanced_blocking_pauses (write_target_node_id, anchor_node_id, status, expires_at, updated_at, capture_before_write) VALUES (?, ?, 'activation-pending', ?, ?, 1) ON CONFLICT(write_target_node_id) DO UPDATE SET anchor_node_id = excluded.anchor_node_id, expires_at = excluded.expires_at, status = CASE WHEN advanced_blocking_pauses.status = 'resume-pending' THEN 'activation-pending' ELSE advanced_blocking_pauses.status END, last_error = NULL, updated_at = excluded.updated_at`,
       )
       .run(targetKey, anchorNodeId, expiresAt, now);
   }
@@ -222,11 +223,34 @@ export class AdvancedBlockingPauseStateService implements OnModuleInit {
       throw error;
     }
   }
+  requestResume(targetKey: string): void {
+    const now = new Date().toISOString();
+    this.requireDb()
+      .prepare(
+        "UPDATE advanced_blocking_pauses SET expires_at = ?, status = 'resume-pending', last_error = NULL, updated_at = ? WHERE write_target_node_id = ?",
+      )
+      .run(now, now, targetKey);
+  }
+  markVerificationFailed(
+    targetKey: string,
+    error: string,
+    expectedUpdatedAt: string,
+  ): void {
+    this.requireDb()
+      .prepare(
+        "UPDATE advanced_blocking_pauses SET last_error = ? WHERE write_target_node_id = ? AND updated_at = ?",
+      )
+      .run(error, targetKey, expectedUpdatedAt);
+  }
   markActivationPending(targetKey: string, error: string): void {
     this.mark(targetKey, "activation-pending", error);
   }
-  markResumePending(targetKey: string, error: string): void {
-    this.mark(targetKey, "resume-pending", error);
+  markResumePending(
+    targetKey: string,
+    error: string,
+    expectedUpdatedAt?: string,
+  ): void {
+    this.mark(targetKey, "resume-pending", error, expectedUpdatedAt);
   }
   remove(targetKey: string): void {
     this.requireDb()
@@ -239,12 +263,20 @@ export class AdvancedBlockingPauseStateService implements OnModuleInit {
     targetKey: string,
     status: AdvancedBlockingPauseTargetStatus,
     error: string,
+    expectedUpdatedAt?: string,
   ): void {
     this.requireDb()
       .prepare(
-        "UPDATE advanced_blocking_pauses SET status = ?, last_error = ?, updated_at = ? WHERE write_target_node_id = ?",
+        "UPDATE advanced_blocking_pauses SET status = ?, last_error = ?, updated_at = ? WHERE write_target_node_id = ? AND (? IS NULL OR updated_at = ?)",
       )
-      .run(status, error, new Date().toISOString(), targetKey);
+      .run(
+        status,
+        error,
+        new Date().toISOString(),
+        targetKey,
+        expectedUpdatedAt ?? null,
+        expectedUpdatedAt ?? null,
+      );
   }
   private requireDb() {
     const db = this.companionDb.db;
@@ -262,6 +294,7 @@ export class AdvancedBlockingPauseStateService implements OnModuleInit {
         ? { lastResolvedNodeId: row.last_resolved_node_id }
         : {}),
       status: row.status,
+      captureBeforeWrite: row.capture_before_write === 1,
       expiresAt: row.expires_at,
       ...(row.previous_enable_blocking_present === null
         ? {}
