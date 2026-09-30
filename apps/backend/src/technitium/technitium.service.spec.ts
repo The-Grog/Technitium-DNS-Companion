@@ -657,7 +657,7 @@ describe("TechnitiumService request (session auth)", () => {
 
     const requestSpy = jest
       .spyOn(axios, "request")
-      .mockResolvedValue({ data: { status: "ok" } } as never);
+      .mockResolvedValue({ data: { status: "ok" } });
     const node = {
       id: "node1",
       name: "Node 1",
@@ -701,7 +701,7 @@ describe("TechnitiumService request (session auth)", () => {
       })
       .mockResolvedValueOnce({
         data: { status: "ok", info: { version: "14.2" } },
-      } as never);
+      });
 
     const result = await AuthRequestContext.run({ session }, () =>
       new TechnitiumService([node], new DhcpSnapshotService()).getNodeStatus(
@@ -735,7 +735,7 @@ describe("TechnitiumService request (session auth)", () => {
     } satisfies TechnitiumNodeConfig;
     const requestSpy = jest.spyOn(axios, "request").mockResolvedValue({
       data: { server: "server1", status: "ok" },
-    } as never);
+    });
     service = new TechnitiumService([node], new DhcpSnapshotService());
 
     const result = await AuthRequestContext.run({ session }, () =>
@@ -837,7 +837,7 @@ describe("TechnitiumService request (session auth)", () => {
         status: "error",
         errorMessage: "DNS server failed to resolve localhost.",
       },
-    } as never);
+    });
     service = new TechnitiumService([node], new DhcpSnapshotService());
 
     const result = await AuthRequestContext.run({ session }, () =>
@@ -898,7 +898,7 @@ describe("TechnitiumService request (session auth)", () => {
 
     jest
       .spyOn(axios, "request")
-      .mockResolvedValue({ data: { status: "invalid-token" } } as never);
+      .mockResolvedValue({ data: { status: "invalid-token" } });
 
     const node = {
       id: "node1",
@@ -1286,7 +1286,7 @@ describe("TechnitiumService — resolveClusterWriteTargets", () => {
     const warnSpy = jest.fn();
     (service as unknown as { logger: { warn: jest.Mock } }).logger = {
       warn: warnSpy,
-    } as never;
+    };
 
     const { perCandidate, writeTargets } =
       await service.resolveClusterWriteTargets(["x", "y"], nodes);

@@ -165,7 +165,8 @@ type ZoneComparisonFieldAlways = (typeof ZONE_COMPARISON_FIELDS_ALWAYS)[number];
 type ZoneComparisonFieldConditional =
   (typeof ZONE_COMPARISON_FIELDS_CONDITIONAL)[number];
 type ZoneComparisonField =
-  ZoneComparisonFieldAlways | ZoneComparisonFieldConditional;
+  | ZoneComparisonFieldAlways
+  | ZoneComparisonFieldConditional;
 
 // Secondary forwarder types that don't have Zone Transfer/Notify settings
 const SECONDARY_FORWARDER_TYPES = new Set([
@@ -3377,7 +3378,7 @@ export class TechnitiumService {
           );
 
           const data = this.unwrapApiResponse<TechnitiumPtrLookupResult>(
-            envelope as unknown as TechnitiumApiResponse<TechnitiumPtrLookupResult>,
+            envelope,
             candidate.id,
             "PTR lookup",
           );
@@ -5622,7 +5623,8 @@ export class TechnitiumService {
         );
         const existsOnTarget = Boolean(existingTargetScope);
         let targetScopeDetails:
-          import("./technitium.types").TechnitiumDhcpScope | undefined;
+          | import("./technitium.types").TechnitiumDhcpScope
+          | undefined;
 
         if (existsOnTarget) {
           try {
@@ -5639,19 +5641,16 @@ export class TechnitiumService {
         }
 
         const sourceScopeDetail =
-          sourceScopeDetails.get(scopeName.toLowerCase()) ||
-          (sourceScope as unknown as import("./technitium.types").TechnitiumDhcpScope);
+          sourceScopeDetails.get(scopeName.toLowerCase()) || sourceScope;
 
         const scopeDiff = targetScopeDetails
           ? this.compareDhcpScopes(sourceScopeDetail, targetScopeDetails, {
               ignoreOfferDelayTime: shouldPreserveOfferDelayTime,
             })
           : existingTargetScope
-            ? this.compareDhcpScopes(
-                sourceScopeDetail,
-                existingTargetScope as unknown as import("./technitium.types").TechnitiumDhcpScope,
-                { ignoreOfferDelayTime: shouldPreserveOfferDelayTime },
-              )
+            ? this.compareDhcpScopes(sourceScopeDetail, existingTargetScope, {
+                ignoreOfferDelayTime: shouldPreserveOfferDelayTime,
+              })
             : undefined;
 
         // Apply strategy
@@ -6183,11 +6182,11 @@ export class TechnitiumService {
       for (const field of fieldsToCompare) {
         if (
           !this.areZoneValuesEqual(
-            baselineNormalized[field as ZoneComparisonField],
-            currentNormalized[field as ZoneComparisonField],
+            baselineNormalized[field],
+            currentNormalized[field],
           )
         ) {
-          differences.add(field as ZoneComparisonField);
+          differences.add(field);
         }
       }
     }
@@ -6228,7 +6227,7 @@ export class TechnitiumService {
       );
     }
 
-    return result as Record<ZoneComparisonField, unknown>;
+    return result;
   }
 
   private normalizeStringArray(values: string[] | null | undefined): string[] {
@@ -6670,7 +6669,10 @@ export class TechnitiumService {
             `Technitium node "${nodeId}" has no session token for its write target.`,
           );
         }
-        const probe = await this.validateExplicitSessionToken(writeTarget, token);
+        const probe = await this.validateExplicitSessionToken(
+          writeTarget,
+          token,
+        );
         const role = this.getCredentialProbeNodeRole(config, probe);
         if (
           probe.permissions["Apps"]?.canModify !== true ||
@@ -6697,28 +6699,54 @@ export class TechnitiumService {
     }
   }
   /** Verify Apps: Modify for already-resolved effective write targets. */
-  async assertSessionConfigWriteTargets(writeTargetNodeIds: string[]): Promise<void> {
+  async assertSessionConfigWriteTargets(
+    writeTargetNodeIds: string[],
+  ): Promise<void> {
     const session = AuthRequestContext.getSession();
     const credentials = session?.groupCredentials;
     if (!session || (!credentials && session.authSource !== "password")) {
-      throw new ForbiddenException("Apps: Modify permission could not be verified for this session.");
+      throw new ForbiddenException(
+        "Apps: Modify permission could not be verified for this session.",
+      );
     }
     for (const writeTarget of new Set(writeTargetNodeIds)) {
       const config = this.nodeConfigs.find((item) => item.id === writeTarget);
-      if (!config) throw new ForbiddenException(`Technitium node "${writeTarget}" is not verified for Apps: Modify in this session.`);
+      if (!config)
+        throw new ForbiddenException(
+          `Technitium node "${writeTarget}" is not verified for Apps: Modify in this session.`,
+        );
       if (!credentials) {
         const token = session.tokensByNodeId[writeTarget];
-        if (!token) throw new ForbiddenException("Apps: Modify permission could not be verified for this session.");
-        const probe = await this.validateExplicitSessionToken(writeTarget, token);
+        if (!token)
+          throw new ForbiddenException(
+            "Apps: Modify permission could not be verified for this session.",
+          );
+        const probe = await this.validateExplicitSessionToken(
+          writeTarget,
+          token,
+        );
         const role = this.getCredentialProbeNodeRole(config, probe);
-        if (probe.permissions["Apps"]?.canModify !== true || (probe.clusterInitialized && role !== "Primary")) {
-          throw new ForbiddenException(`Technitium node "${writeTarget}" is not verified for Apps: Modify in this session.`);
+        if (
+          probe.permissions["Apps"]?.canModify !== true ||
+          (probe.clusterInitialized && role !== "Primary")
+        ) {
+          throw new ForbiddenException(
+            `Technitium node "${writeTarget}" is not verified for Apps: Modify in this session.`,
+          );
         }
         continue;
       }
-      const group = credentials.groups.find((item) => item.groupId === nodeGroupId(config));
-      if (group?.state !== "ready" || group.capabilities.primaryConfigWrite !== true || !group.admittedNodeIds.primaryConfigWrite.includes(writeTarget)) {
-        throw new ForbiddenException(`Technitium node "${writeTarget}" is not verified for Apps: Modify in this session.`);
+      const group = credentials.groups.find(
+        (item) => item.groupId === nodeGroupId(config),
+      );
+      if (
+        group?.state !== "ready" ||
+        group.capabilities.primaryConfigWrite !== true ||
+        !group.admittedNodeIds.primaryConfigWrite.includes(writeTarget)
+      ) {
+        throw new ForbiddenException(
+          `Technitium node "${writeTarget}" is not verified for Apps: Modify in this session.`,
+        );
       }
     }
   }

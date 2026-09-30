@@ -381,72 +381,82 @@ export class AdvancedBlockingService {
   async activatePauseRoot(
     nodeId: string,
     authMode: "session" | "schedule",
-    beforeActivate?: (target: { targetKey: string; writeNodeId: string }) => void,
+    beforeActivate?: (target: {
+      targetKey: string;
+      writeNodeId: string;
+    }) => void,
   ): Promise<void> {
-    await this.withConfigMutation(nodeId, authMode, async (target) => {
-      beforeActivate?.(target);
-      const current = this.requirePauseState().get(target.targetKey);
-      if (!current) {
-        throw new Error("Advanced Blocking pause ownership was removed before activation.");
-      }
-      const { envelope } = await this.fetchConfigWithFallback(
-        target.writeNodeId,
-        authMode,
-      );
-      const rawConfig = envelope?.response?.config || "{}";
-      const parsed = parseAdvancedBlockingJsonc(rawConfig);
-      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
-        throw new Error("Advanced Blocking config payload was not an object.");
-      const root = parsed as Record<string, unknown>;
-      const rootEnableBlocking = root["enableBlocking"];
-      const capturedPresent: boolean = Object.hasOwn(root, "enableBlocking");
-      const capturedValue: boolean | undefined =
-        typeof rootEnableBlocking === "boolean"
-          ? rootEnableBlocking
-          : undefined;
-      const previousPresent: boolean =
-        current?.previousEnableBlockingPresent ?? capturedPresent;
-      const previousValue: boolean | undefined =
-        current?.previousEnableBlockingPresent === undefined
-          ? capturedValue
-          : current.previousEnableBlockingValue;
-      // Capture the pre-pause baseline before config/set. A timeout or crash
-      // after a successful remote write must never recapture forced false.
-      this.requirePauseState().captureOriginal(
-        target.targetKey,
-        target.writeNodeId,
-        previousPresent,
-        previousValue,
-      );
-      await this.writeRawConfig(
-        target.writeNodeId,
-        patchAdvancedBlockingRootEnableBlocking(rawConfig, false),
-        authMode,
-      );
-      const { envelope: verifiedEnvelope } = await this.fetchConfigWithFallback(
-        target.writeNodeId,
-        authMode,
-      );
-      const verified = parseAdvancedBlockingJsonc(
-        verifiedEnvelope?.response?.config || "{}",
-      );
-      if (
-        !verified ||
-        typeof verified !== "object" ||
-        Array.isArray(verified) ||
-        (verified as Record<string, unknown>).enableBlocking !== false
-      ) {
-        throw new Error(
-          "Advanced Blocking pause write could not be confirmed.",
+    await this.withConfigMutation(
+      nodeId,
+      authMode,
+      async (target) => {
+        beforeActivate?.(target);
+        const current = this.requirePauseState().get(target.targetKey);
+        if (!current) {
+          throw new Error(
+            "Advanced Blocking pause ownership was removed before activation.",
+          );
+        }
+        const { envelope } = await this.fetchConfigWithFallback(
+          target.writeNodeId,
+          authMode,
         );
-      }
-      this.requirePauseState().activate(
-        target.targetKey,
-        target.writeNodeId,
-        previousPresent,
-        previousValue,
-      );
-    }, true);
+        const rawConfig = envelope?.response?.config || "{}";
+        const parsed = parseAdvancedBlockingJsonc(rawConfig);
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+          throw new Error(
+            "Advanced Blocking config payload was not an object.",
+          );
+        const root = parsed as Record<string, unknown>;
+        const rootEnableBlocking = root["enableBlocking"];
+        const capturedPresent: boolean = Object.hasOwn(root, "enableBlocking");
+        const capturedValue: boolean | undefined =
+          typeof rootEnableBlocking === "boolean"
+            ? rootEnableBlocking
+            : undefined;
+        const previousPresent: boolean =
+          current?.previousEnableBlockingPresent ?? capturedPresent;
+        const previousValue: boolean | undefined =
+          current?.previousEnableBlockingPresent === undefined
+            ? capturedValue
+            : current.previousEnableBlockingValue;
+        // Capture the pre-pause baseline before config/set. A timeout or crash
+        // after a successful remote write must never recapture forced false.
+        this.requirePauseState().captureOriginal(
+          target.targetKey,
+          target.writeNodeId,
+          previousPresent,
+          previousValue,
+        );
+        await this.writeRawConfig(
+          target.writeNodeId,
+          patchAdvancedBlockingRootEnableBlocking(rawConfig, false),
+          authMode,
+        );
+        const { envelope: verifiedEnvelope } =
+          await this.fetchConfigWithFallback(target.writeNodeId, authMode);
+        const verified = parseAdvancedBlockingJsonc(
+          verifiedEnvelope?.response?.config || "{}",
+        );
+        if (
+          !verified ||
+          typeof verified !== "object" ||
+          Array.isArray(verified) ||
+          (verified as Record<string, unknown>).enableBlocking !== false
+        ) {
+          throw new Error(
+            "Advanced Blocking pause write could not be confirmed.",
+          );
+        }
+        this.requirePauseState().activate(
+          target.targetKey,
+          target.writeNodeId,
+          previousPresent,
+          previousValue,
+        );
+      },
+      true,
+    );
   }
 
   /** Read the live root flag under the canonical mutation gate without writing. */
@@ -477,22 +487,30 @@ export class AdvancedBlockingService {
     previousValue: boolean | undefined,
     authMode: "session" | "schedule",
     onRestored: (targetKey: string) => void,
-    beforeRestore?: (target: { targetKey: string; writeNodeId: string }) => void,
+    beforeRestore?: (target: {
+      targetKey: string;
+      writeNodeId: string;
+    }) => void,
   ): Promise<void> {
-    await this.withConfigMutation(nodeId, authMode, async (target) => {
-      beforeRestore?.(target);
-      const { envelope } = await this.fetchConfigWithFallback(
-        target.writeNodeId,
-        authMode,
-      );
-      const rawConfig = envelope?.response?.config || "{}";
-      await this.writeRawConfig(
-        target.writeNodeId,
-        patchAdvancedBlockingRootEnableBlocking(rawConfig, previousValue),
-        authMode,
-      );
-      onRestored(target.targetKey);
-    }, true);
+    await this.withConfigMutation(
+      nodeId,
+      authMode,
+      async (target) => {
+        beforeRestore?.(target);
+        const { envelope } = await this.fetchConfigWithFallback(
+          target.writeNodeId,
+          authMode,
+        );
+        const rawConfig = envelope?.response?.config || "{}";
+        await this.writeRawConfig(
+          target.writeNodeId,
+          patchAdvancedBlockingRootEnableBlocking(rawConfig, previousValue),
+          authMode,
+        );
+        onRestored(target.targetKey);
+      },
+      true,
+    );
   }
 
   private async withConfigMutation<T>(
@@ -505,7 +523,7 @@ export class AdvancedBlockingService {
       targetKey: string;
       writeNodeId: string;
     }) => Promise<T>,
-      requireValidatedPrimary = false,
+    requireValidatedPrimary = false,
   ): Promise<T> {
     const authMode =
       typeof authModeOrOperation === "function"

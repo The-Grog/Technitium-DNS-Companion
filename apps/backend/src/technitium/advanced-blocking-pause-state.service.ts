@@ -137,8 +137,16 @@ export class AdvancedBlockingPauseStateService implements OnModuleInit {
         new Date().toISOString(),
         targetKey,
       );
-    if (this.requireDb().prepare("SELECT 1 FROM advanced_blocking_pauses WHERE write_target_node_id = ?").get(targetKey) === undefined) {
-      throw new Error("Advanced Blocking pause ownership was removed before its baseline could be recorded.");
+    if (
+      this.requireDb()
+        .prepare(
+          "SELECT 1 FROM advanced_blocking_pauses WHERE write_target_node_id = ?",
+        )
+        .get(targetKey) === undefined
+    ) {
+      throw new Error(
+        "Advanced Blocking pause ownership was removed before its baseline could be recorded.",
+      );
     }
   }
 
@@ -168,8 +176,16 @@ export class AdvancedBlockingPauseStateService implements OnModuleInit {
         new Date().toISOString(),
         targetKey,
       );
-    if (this.requireDb().prepare("SELECT 1 FROM advanced_blocking_pauses WHERE write_target_node_id = ?").get(targetKey) === undefined) {
-      throw new Error("Advanced Blocking pause ownership was removed before activation could be recorded.");
+    if (
+      this.requireDb()
+        .prepare(
+          "SELECT 1 FROM advanced_blocking_pauses WHERE write_target_node_id = ?",
+        )
+        .get(targetKey) === undefined
+    ) {
+      throw new Error(
+        "Advanced Blocking pause ownership was removed before activation could be recorded.",
+      );
     }
   }
   /** Adopt a validated replacement Primary without changing pause ownership. */

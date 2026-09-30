@@ -94,11 +94,12 @@ export class AdvancedBlockingPauseService
       { anchorNodeId: string; writeNodeId: string }
     >();
     for (const nodeId of eligible) {
-      const sessionTarget = await this.advancedBlockingService.resolvePauseTarget(
-        nodeId,
-        "session",
-        true,
-      );
+      const sessionTarget =
+        await this.advancedBlockingService.resolvePauseTarget(
+          nodeId,
+          "session",
+          true,
+        );
       await this.technitiumService.assertSessionConfigWriteTargets([
         sessionTarget.writeNodeId,
       ]);
@@ -143,19 +144,21 @@ export class AdvancedBlockingPauseService
     }
 
     for (const target of resolvedTargets) {
-      const sessionTarget = await this.advancedBlockingService.resolvePauseTarget(
-        target.anchorNodeId,
-        "session",
-        true,
-      );
+      const sessionTarget =
+        await this.advancedBlockingService.resolvePauseTarget(
+          target.anchorNodeId,
+          "session",
+          true,
+        );
       await this.technitiumService.assertSessionConfigWriteTargets([
         sessionTarget.writeNodeId,
       ]);
-      const scheduleTarget = await this.advancedBlockingService.resolvePauseTarget(
-        target.anchorNodeId,
-        "schedule",
-        true,
-      );
+      const scheduleTarget =
+        await this.advancedBlockingService.resolvePauseTarget(
+          target.anchorNodeId,
+          "schedule",
+          true,
+        );
       if (
         sessionTarget.targetKey !== target.writeTargetNodeId ||
         sessionTarget.writeNodeId !== scheduleTarget.writeNodeId ||
@@ -200,9 +203,7 @@ export class AdvancedBlockingPauseService
       const legacy =
         !target.writeTargetNodeId.startsWith("node:") &&
         !target.writeTargetNodeId.startsWith("cluster:");
-      let resolved:
-        | { targetKey: string; writeNodeId: string }
-        | undefined;
+      let resolved: { targetKey: string; writeNodeId: string } | undefined;
       try {
         resolved = await this.advancedBlockingService.resolvePauseTarget(
           target.anchorNodeId,
@@ -210,17 +211,19 @@ export class AdvancedBlockingPauseService
           true,
         );
       } catch (error) {
-// If the anchor is unreachable, recover through its configured group only.
+        // If the anchor is unreachable, recover through its configured group only.
         // recover only when every reachable candidate resolves to one validated
         // current Primary; ambiguity fails closed.
-        const configuredGroupId = this.technitiumService.getConfiguredNodeGroupId(
-          target.anchorNodeId,
-        );
+        const configuredGroupId =
+          this.technitiumService.getConfiguredNodeGroupId(target.anchorNodeId);
         if (!configuredGroupId) throw error;
         const candidates = await this.technitiumService.listNodes({
           authMode: "schedule",
         });
-        const matches = new Map<string, { targetKey: string; writeNodeId: string }>();
+        const matches = new Map<
+          string,
+          { targetKey: string; writeNodeId: string }
+        >();
         for (const candidate of candidates.filter(
           (candidate) => candidate.groupId === configuredGroupId,
         )) {
@@ -238,7 +241,8 @@ export class AdvancedBlockingPauseService
         if (matches.size !== 1) throw error;
         resolved = [...matches.values()][0];
       }
-      if (!resolved) throw new Error("No validated pause write target is available.");
+      if (!resolved)
+        throw new Error("No validated pause write target is available.");
       if (legacy) {
         this.pauseState.migrateLegacyKey(
           target.writeTargetNodeId,
@@ -246,7 +250,9 @@ export class AdvancedBlockingPauseService
         );
         const migrated = this.pauseState.get(resolved.targetKey);
         if (!migrated || migrated.writeTargetNodeId !== resolved.targetKey) {
-          throw new Error("Legacy pause migration did not retain durable ownership.");
+          throw new Error(
+            "Legacy pause migration did not retain durable ownership.",
+          );
         }
         return migrated;
       }
@@ -290,7 +296,10 @@ export class AdvancedBlockingPauseService
         );
       }
       if (live.paused) {
-        this.pauseState.markVerified(target.writeTargetNodeId, live.writeNodeId);
+        this.pauseState.markVerified(
+          target.writeTargetNodeId,
+          live.writeNodeId,
+        );
         return;
       }
       await this.tryActivate(target.writeTargetNodeId, target.anchorNodeId);
@@ -318,13 +327,17 @@ export class AdvancedBlockingPauseService
             (expectedWriteNodeId &&
               resolved.writeNodeId !== expectedWriteNodeId)
           ) {
-            throw new Error("Advanced Blocking pause target changed before activation.");
+            throw new Error(
+              "Advanced Blocking pause target changed before activation.",
+            );
           }
           if (expiresAt) {
             this.pauseState.beginPause(targetKey, anchorNodeId, expiresAt);
           }
           if (!this.pauseState.get(targetKey)) {
-            throw new Error("Advanced Blocking pause ownership was removed before activation.");
+            throw new Error(
+              "Advanced Blocking pause ownership was removed before activation.",
+            );
           }
         },
       );
@@ -352,7 +365,10 @@ export class AdvancedBlockingPauseService
     }
     try {
       const reconciliation = await this.schedulesEvaluator.runNow(false);
-      if (reconciliation.errored > 0 || reconciliation.pendingRecoveryCount > 0) {
+      if (
+        reconciliation.errored > 0 ||
+        reconciliation.pendingRecoveryCount > 0
+      ) {
         throw new Error(
           "DNS Schedule reconciliation is incomplete; keeping Advanced Blocking paused.",
         );
@@ -365,7 +381,9 @@ export class AdvancedBlockingPauseService
         "schedule",
         (resolvedTargetKey) => {
           if (resolvedTargetKey !== target.writeTargetNodeId) {
-            throw new Error("Advanced Blocking pause target changed before resume.");
+            throw new Error(
+              "Advanced Blocking pause target changed before resume.",
+            );
           }
           this.pauseState.remove(resolvedTargetKey);
         },
@@ -375,7 +393,9 @@ export class AdvancedBlockingPauseService
             (expectedWriteNodeId &&
               resolved.writeNodeId !== expectedWriteNodeId)
           ) {
-            throw new Error("Advanced Blocking pause target changed before resume.");
+            throw new Error(
+              "Advanced Blocking pause target changed before resume.",
+            );
           }
           const current = this.pauseState.get(target.writeTargetNodeId);
           if (
@@ -383,7 +403,9 @@ export class AdvancedBlockingPauseService
             current.updatedAt !== target.updatedAt ||
             current.expiresAt !== target.expiresAt
           ) {
-            throw new Error("Advanced Blocking pause ownership changed before resume.");
+            throw new Error(
+              "Advanced Blocking pause ownership changed before resume.",
+            );
           }
         },
       );

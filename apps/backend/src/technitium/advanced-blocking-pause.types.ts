@@ -1,5 +1,7 @@
 export type AdvancedBlockingPauseTargetStatus =
-  "activation-pending" | "active" | "resume-pending";
+  | "activation-pending"
+  | "active"
+  | "resume-pending";
 
 /** Live status is separate from durable ownership; only active is confirmed paused. */
 export type AdvancedBlockingPauseTargetHealth =
