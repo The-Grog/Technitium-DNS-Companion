@@ -7,7 +7,8 @@ import type {
   AdvancedBlockingConfig,
   AdvancedBlockingGroup,
 } from "./advanced-blocking.types";
-import type { TechnitiumService } from "./technitium.service";
+import { TechnitiumService } from "./technitium.service";
+import { DhcpSnapshotService } from "./dhcp-snapshot.service";
 
 describe("AdvancedBlockingService.serializeConfig", () => {
   const createService = () => {
@@ -418,5 +419,144 @@ describe("AdvancedBlockingService pause root lifecycle", () => {
       enableBlocking: true,
     });
     expect(onRestored).toHaveBeenCalledWith("node:node-a");
+  });
+});
+describe("AdvancedBlockingService strict topology writes", () => {
+  const pauseState = () => ({
+    get: jest.fn(() => ({})),
+    captureOriginal: jest.fn(),
+    activate: jest.fn(),
+  });
+
+  it("does not issue a config write when strict Primary discovery is unavailable", async () => {
+    const technitium = new TechnitiumService(
+      [
+        { id: "dns1", baseUrl: "https://dns1.test", token: "token" },
+        { id: "dns2", baseUrl: "https://dns2.test", token: "token" },
+      ],
+      new DhcpSnapshotService(),
+    );
+    const internals = technitium as unknown as { request: jest.Mock };
+    internals.request = jest.fn().mockRejectedValue(new Error("unreachable"));
+    const write = jest.spyOn(technitium, "executeAction");
+    const service = new AdvancedBlockingService(
+      technitium,
+      undefined,
+      undefined,
+      pauseState() as never,
+    );
+
+    await expect(service.activatePauseRoot("dns1", "schedule")).rejects.toThrow(
+      "No admitted Advanced Blocking write target",
+    );
+
+    expect(write).not.toHaveBeenCalled();
+    technitium.onModuleDestroy();
+  });
+
+  it.each([
+    ["status: ok without info", { status: "ok" }],
+    ["status: ok with no clusterInitialized", { status: "ok", info: {} }],
+    [
+      "clusterInitialized: true without a cluster domain",
+      {
+        status: "ok",
+        info: {
+          clusterInitialized: true,
+          clusterNodes: [
+            {
+              id: 1,
+              name: "dns1",
+              url: "https://dns1.test",
+              type: "Primary",
+              state: "Connected",
+            },
+          ],
+        },
+      },
+    ],
+  ])("does not issue a config write for %s", async (_scenario, response) => {
+    const technitium = new TechnitiumService(
+      [{ id: "dns1", baseUrl: "https://dns1.test", token: "token" }],
+      new DhcpSnapshotService(),
+    );
+    const internals = technitium as unknown as { request: jest.Mock };
+    internals.request = jest.fn().mockResolvedValue(response);
+    const write = jest.spyOn(technitium, "executeAction");
+    const service = new AdvancedBlockingService(
+      technitium,
+      undefined,
+      undefined,
+      pauseState() as never,
+    );
+
+    await expect(service.activatePauseRoot("dns1", "schedule")).rejects.toThrow(
+      "No admitted Advanced Blocking write target",
+    );
+
+    expect(write).not.toHaveBeenCalled();
+    technitium.onModuleDestroy();
+  });
+  it("writes through a validated Primary rather than the requested Secondary", async () => {
+    let raw =
+      '{"enableBlocking":true,"localEndPointGroupMap":{},"networkGroupMap":{},"groups":[]}';
+    const technitium = new TechnitiumService(
+      [
+        { id: "dns1", baseUrl: "https://dns1.test", token: "token" },
+        { id: "dns2", baseUrl: "https://dns2.test", token: "token" },
+      ],
+      new DhcpSnapshotService(),
+    );
+    const internals = technitium as unknown as { request: jest.Mock };
+    internals.request = jest.fn().mockResolvedValue({
+      status: "ok",
+      info: {
+        clusterInitialized: true,
+        clusterDomain: "cluster.test",
+        clusterNodes: [
+          {
+            id: 1,
+            name: "dns1",
+            url: "https://dns1.test",
+            type: "Primary",
+            state: "Connected",
+          },
+          {
+            id: 2,
+            name: "dns2",
+            url: "https://dns2.test",
+            type: "Secondary",
+            state: "Connected",
+          },
+        ],
+      },
+    });
+    const write = jest
+      .spyOn(technitium, "executeAction")
+      .mockImplementation((_nodeId, request) => {
+        if (request.method === "GET") {
+          return { status: "ok", response: { config: raw } };
+        }
+        raw = new URLSearchParams(request.body).get("config") ?? "";
+        return { status: "ok" };
+      });
+    const service = new AdvancedBlockingService(
+      technitium,
+      undefined,
+      undefined,
+      pauseState() as never,
+    );
+
+    await service.activatePauseRoot("dns2", "schedule");
+
+    expect(
+      write.mock.calls.some(
+        ([nodeId, request]) => nodeId === "dns1" && request.method === "POST",
+      ),
+    ).toBe(true);
+    expect(parseAdvancedBlockingJsonc(raw)).toMatchObject({
+      enableBlocking: false,
+    });
+    technitium.onModuleDestroy();
   });
 });

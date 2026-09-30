@@ -937,12 +937,15 @@ export class TechnitiumService {
 
             if (
               response.status === "ok" &&
-              !response.info?.clusterInitialized
+              response.info?.clusterInitialized === false
             ) {
               sharedClusterInfoByGroup.set(groupId, { initialized: false });
               break;
             }
-            if (response.status === "ok" && response.info?.clusterInitialized) {
+            if (
+              response.status === "ok" &&
+              response.info?.clusterInitialized === true
+            ) {
               const clusterNodes = response.info.clusterNodes || [];
               sharedClusterInfoByGroup.set(groupId, {
                 initialized: true,
@@ -989,7 +992,13 @@ export class TechnitiumService {
               name: name || id,
               baseUrl,
               groupId: configuredGroupId,
-              clusterState: { initialized: false, type: "Standalone" as const },
+              // A false initialized value is safe for strict writes only after
+              // a successful probe confirmed that this group is standalone.
+              clusterState: {
+                initialized: false,
+                type: "Standalone" as const,
+                topologyKnown: sharedClusterInfo !== null,
+              },
               isPrimary: false,
             };
           }
@@ -1133,6 +1142,7 @@ export class TechnitiumService {
               dnsServerDomain: clusterNode?.name || id,
               type: nodeType,
               health: "Connected" as const,
+              topologyKnown: true,
             },
             isPrimary: nodeType === "Primary",
           };
@@ -1150,6 +1160,7 @@ export class TechnitiumService {
               initialized: false,
               type: "Standalone" as const,
               health: "Unreachable" as const,
+              topologyKnown: false,
             },
             isPrimary: false,
           };
@@ -1259,6 +1270,14 @@ export class TechnitiumService {
       // Unknown node: pass through — legacy behavior, will error at request time
       // if truly invalid. Callers can decide what to do with the result.
       if (!summary) {
+        if (options?.requireValidatedPrimary) {
+          perCandidate.set(nodeId, {
+            flushNodes: [],
+            reason:
+              "The requested node is not a validated member with confirmed topology.",
+          });
+          continue;
+        }
         if (this.nodeConfigs.length === 0) {
           perCandidate.set(nodeId, {
             writeTarget: nodeId,
@@ -1287,6 +1306,33 @@ export class TechnitiumService {
       const domain = summary.clusterState?.domain;
       const clustered = summary.clusterState?.initialized === true;
       const groupId = summary.groupId ?? INTERNAL_DEFAULT_GROUP_ID;
+
+      if (options?.requireValidatedPrimary) {
+        if (summary.clusterState?.topologyKnown !== true) {
+          perCandidate.set(nodeId, {
+            flushNodes: [],
+            reason:
+              "Cluster topology is unavailable, so a current Primary could not be validated.",
+          });
+          continue;
+        }
+        if (!clustered && summary.clusterState?.initialized !== false) {
+          perCandidate.set(nodeId, {
+            flushNodes: [],
+            reason:
+              "Cluster topology is incomplete, so a current Primary could not be validated.",
+          });
+          continue;
+        }
+        if (clustered && !domain) {
+          perCandidate.set(nodeId, {
+            flushNodes: [],
+            reason:
+              "Cluster topology is incomplete, so a current Primary could not be validated.",
+          });
+          continue;
+        }
+      }
 
       if (!clustered || !domain) {
         // Standalone — self-write, self-flush.
