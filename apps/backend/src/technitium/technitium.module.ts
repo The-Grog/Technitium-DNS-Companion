@@ -105,8 +105,8 @@ import { ZoneSnapshotService } from "./zone-snapshot.service";
   ],
   controllers: [
     TechnitiumController,
-    AdvancedBlockingController,
     AdvancedBlockingPauseController,
+    AdvancedBlockingController,
     BuiltInBlockingController,
     DomainGroupsController,
     DnsSchedulesController,
