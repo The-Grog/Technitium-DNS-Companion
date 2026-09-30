@@ -355,7 +355,7 @@ export class AdvancedBlockingService {
       await this.technitiumService.resolveClusterWriteTargets(
         [nodeId],
         summaries,
-        { requireValidatedPrimary },
+        { requireValidatedPrimary, authMode },
       );
     const writeNodeId = perCandidate.get(nodeId)?.writeTarget;
     if (!writeNodeId)

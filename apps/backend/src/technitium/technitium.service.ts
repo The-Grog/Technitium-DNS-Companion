@@ -1185,7 +1185,10 @@ export class TechnitiumService {
   async resolveClusterWriteTargets(
     candidateNodeIds: string[],
     summaries?: TechnitiumNodeSummary[],
-    options?: { requireValidatedPrimary?: boolean },
+    options?: {
+      requireValidatedPrimary?: boolean;
+      authMode?: "session" | "schedule";
+    },
   ): Promise<{
     perCandidate: Map<
       string,
@@ -1198,14 +1201,24 @@ export class TechnitiumService {
     >;
     writeTargets: string[];
   }> {
-    const nodes = summaries ?? (await this.listNodes());
+    const nodes =
+      summaries ??
+      (await this.listNodes(
+        options?.authMode ? { authMode: options.authMode } : undefined,
+      ));
     const byId = new Map(nodes.map((s) => [s.id, s]));
 
     const primaryByGroup = new Map<string, TechnitiumNodeSummary>();
     const clusterMembers = new Map<string, string[]>();
     const skippedClusterMembers = new Map<string, string[]>();
-    let admittedWriteNodeIds = this.getAdmittedNodeIds("primaryConfigWrite");
-    let admittedFlushNodeIds = this.getAdmittedNodeIds("cacheFlush");
+    let admittedWriteNodeIds = this.getAdmittedNodeIds(
+      "primaryConfigWrite",
+      options?.authMode,
+    );
+    let admittedFlushNodeIds = this.getAdmittedNodeIds(
+      "cacheFlush",
+      options?.authMode,
+    );
     if (this.nodeConfigs.length === 0) {
       admittedWriteNodeIds = new Set(nodes.map((node) => node.id));
       admittedFlushNodeIds = new Set(nodes.map((node) => node.id));
@@ -1345,9 +1358,17 @@ export class TechnitiumService {
 
   private getAdmittedNodeIds(
     role: keyof GroupCredentialStatus["admittedNodeIds"],
+    authMode?: "session" | "schedule",
   ): Set<string> {
-    const session = AuthRequestContext.getSession();
-    const envelope = session?.groupCredentials ?? this.scheduleGroupCredentials;
+    // A schedule resolution inside an interactive request must never inherit
+    // session admission. The target selected here is the one the unattended
+    // credential will mutate.
+    const session =
+      authMode === "schedule" ? undefined : AuthRequestContext.getSession();
+    const envelope =
+      authMode === "schedule"
+        ? this.scheduleGroupCredentials
+        : (session?.groupCredentials ?? this.scheduleGroupCredentials);
     if (envelope) {
       return new Set(
         envelope.groups.flatMap((group) => group.admittedNodeIds[role]),

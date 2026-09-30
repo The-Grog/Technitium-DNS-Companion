@@ -53,29 +53,30 @@ describe("AdvancedBlockingPauseService", () => {
     expect(technitium.assertSessionConfigWriteTargets).not.toHaveBeenCalled();
     expect(advancedBlocking.activatePauseRoot).not.toHaveBeenCalled();
   });
-  it("checks interactive Apps Modify admission before schedule credentials", async () => {
+  it("fails closed when the session lacks Apps: Modify on the schedule-resolved Primary", async () => {
     const { service, technitium, advancedBlocking } = create();
-    technitium.listNodes.mockResolvedValue([
-      { id: "advanced", hasAdvancedBlocking: true },
-    ]);
+    technitium.listNodes.mockResolvedValue([{ id: "dns1" }]);
     advancedBlocking.verifyPauseRoot.mockResolvedValue({
-      targetKey: "node:advanced",
-      writeNodeId: "advanced",
+      targetKey: "cluster:default:dns.example",
+      writeNodeId: "dns1",
       paused: false,
     });
     advancedBlocking.resolvePauseTarget.mockResolvedValue({
-      targetKey: "node:advanced",
-      writeNodeId: "advanced",
+      targetKey: "cluster:default:dns.example",
+      writeNodeId: "dns1",
     });
     technitium.assertSessionConfigWriteTargets.mockRejectedValue(
       new Error("forbidden"),
     );
     await expect(service.pause(15)).rejects.toThrow("forbidden");
     expect(advancedBlocking.resolvePauseTarget).toHaveBeenCalledWith(
-      "advanced",
-      "session",
+      "dns1",
+      "schedule",
       true,
     );
+    expect(technitium.assertSessionConfigWriteTargets).toHaveBeenCalledWith([
+      "dns1",
+    ]);
     expect(advancedBlocking.activatePauseRoot).not.toHaveBeenCalled();
   });
 
@@ -175,7 +176,7 @@ describe("AdvancedBlockingPauseService", () => {
     expect(resolved).toMatchObject({ anchorNodeId: "replacement-primary" });
   });
 
-  it("uses the live root probe when topology summaries omit hasAdvancedBlocking", async () => {
+  it("uses the schedule-resolved Primary even when session topology differs", async () => {
     const { service, pauseState, technitium, advancedBlocking } = create();
     const targets: Array<{
       writeTargetNodeId: string;
@@ -203,12 +204,12 @@ describe("AdvancedBlockingPauseService", () => {
     );
     technitium.listNodes.mockResolvedValue([{ id: "dns1" }]);
     advancedBlocking.verifyPauseRoot.mockResolvedValue({
-      targetKey: "node:dns1",
-      writeNodeId: "dns1",
+      targetKey: "cluster:session-view.example",
+      writeNodeId: "session-primary",
       paused: false,
     });
     advancedBlocking.resolvePauseTarget.mockResolvedValue({
-      targetKey: "node:dns1",
+      targetKey: "cluster:default:dns.example",
       writeNodeId: "dns1",
     });
     advancedBlocking.activatePauseRoot.mockImplementation(
@@ -220,7 +221,10 @@ describe("AdvancedBlockingPauseService", () => {
           writeNodeId: string;
         }) => void,
       ) => {
-        beforeActivate({ targetKey: "node:dns1", writeNodeId: "dns1" });
+        beforeActivate({
+          targetKey: "cluster:default:dns.example",
+          writeNodeId: "dns1",
+        });
         targets[0].status = "active";
         targets[0].previousEnableBlockingPresent = true;
         targets[0].previousEnableBlockingValue = true;
@@ -232,6 +236,14 @@ describe("AdvancedBlockingPauseService", () => {
     expect(advancedBlocking.verifyPauseRoot).toHaveBeenCalledWith(
       "dns1",
       "session",
+    );
+    expect(technitium.assertSessionConfigWriteTargets).toHaveBeenCalledWith([
+      "dns1",
+    ]);
+    expect(advancedBlocking.resolvePauseTarget).not.toHaveBeenCalledWith(
+      "dns1",
+      "session",
+      true,
     );
     expect(advancedBlocking.activatePauseRoot).toHaveBeenCalledWith(
       "dns1",
@@ -264,13 +276,93 @@ describe("AdvancedBlockingPauseService", () => {
 
     expect(advancedBlocking.resolvePauseTarget).toHaveBeenCalledWith(
       "dns1",
-      "session",
+      "schedule",
       true,
     );
     expect(advancedBlocking.activatePauseRoot).toHaveBeenCalledWith(
       "dns1",
       "schedule",
       expect.any(Function),
+    );
+  });
+  it("authorizes the newly schedule-resolved Primary after a failover", async () => {
+    const { service, technitium, advancedBlocking } = create();
+    technitium.listNodes.mockResolvedValue([{ id: "dns1" }]);
+    advancedBlocking.verifyPauseRoot.mockResolvedValue({
+      targetKey: "cluster:default:dns.example",
+      writeNodeId: "dns1",
+      paused: false,
+    });
+    advancedBlocking.resolvePauseTarget.mockResolvedValue({
+      targetKey: "cluster:default:dns.example",
+      writeNodeId: "dns2",
+    });
+
+    await service.pause(15);
+
+    expect(advancedBlocking.resolvePauseTarget).toHaveBeenCalledWith(
+      "dns1",
+      "schedule",
+      true,
+    );
+    expect(technitium.assertSessionConfigWriteTargets).toHaveBeenCalledWith([
+      "dns2",
+    ]);
+  });
+
+  it("fails closed when the schedule credential cannot validate a Primary", async () => {
+    const { service, technitium, advancedBlocking } = create();
+    technitium.listNodes.mockResolvedValue([{ id: "dns1" }]);
+    advancedBlocking.verifyPauseRoot.mockResolvedValue({
+      targetKey: "cluster:default:dns.example",
+      writeNodeId: "dns1",
+      paused: false,
+    });
+    advancedBlocking.resolvePauseTarget.mockRejectedValue(
+      new Error("no validated Primary"),
+    );
+
+    await expect(service.pause(15)).rejects.toThrow("no validated Primary");
+    expect(technitium.assertSessionConfigWriteTargets).not.toHaveBeenCalled();
+    expect(advancedBlocking.activatePauseRoot).not.toHaveBeenCalled();
+  });
+
+  it("resumes through the current schedule target after exact session admission", async () => {
+    const { service, pauseState, technitium, advancedBlocking } = create();
+    const target = {
+      writeTargetNodeId: "cluster:default:dns.example",
+      anchorNodeId: "dns1",
+      status: "active" as const,
+      expiresAt: "2030-01-01T00:00:00.000Z",
+      previousEnableBlockingPresent: true,
+      previousEnableBlockingValue: true,
+      updatedAt: "2029-01-01T00:00:00.000Z",
+    };
+    pauseState.list.mockReturnValue([target]);
+    advancedBlocking.resolvePauseTarget.mockResolvedValue({
+      targetKey: target.writeTargetNodeId,
+      writeNodeId: "dns2",
+    });
+    const internals = service as unknown as {
+      tryResume: jest.MockedFunction<
+        (value: typeof target, expectedWriteNodeId?: string) => Promise<void>
+      >;
+    };
+    jest.spyOn(internals, "tryResume").mockResolvedValue();
+
+    await service.resumeNow();
+
+    expect(technitium.assertSessionConfigWriteTargets).toHaveBeenCalledWith([
+      "dns2",
+    ]);
+    expect(advancedBlocking.resolvePauseTarget).toHaveBeenCalledWith(
+      "dns1",
+      "schedule",
+      true,
+    );
+    expect(internals.tryResume).toHaveBeenCalledWith(
+      expect.objectContaining({ writeTargetNodeId: target.writeTargetNodeId }),
+      "dns2",
     );
   });
 });

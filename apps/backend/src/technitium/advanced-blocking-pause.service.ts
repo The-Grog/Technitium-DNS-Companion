@@ -94,29 +94,17 @@ export class AdvancedBlockingPauseService
       { anchorNodeId: string; writeNodeId: string }
     >();
     for (const nodeId of eligible) {
-      const sessionTarget =
-        await this.advancedBlockingService.resolvePauseTarget(
-          nodeId,
-          "session",
-          true,
-        );
-      await this.technitiumService.assertSessionConfigWriteTargets([
-        sessionTarget.writeNodeId,
-      ]);
+      // Resolve the actual mutation target with the unattended credential,
+      // then prove that the initiating session can modify that exact node.
       const scheduleTarget =
         await this.advancedBlockingService.resolvePauseTarget(
           nodeId,
           "schedule",
           true,
         );
-      if (
-        sessionTarget.targetKey !== scheduleTarget.targetKey ||
-        sessionTarget.writeNodeId !== scheduleTarget.writeNodeId
-      ) {
-        throw new BadRequestException(
-          `The session and unattended credential resolve different write targets for "${nodeId}".`,
-        );
-      }
+      await this.technitiumService.assertSessionConfigWriteTargets([
+        scheduleTarget.writeNodeId,
+      ]);
       if (!targets.has(scheduleTarget.targetKey)) {
         targets.set(scheduleTarget.targetKey, {
           anchorNodeId: nodeId,
@@ -144,32 +132,24 @@ export class AdvancedBlockingPauseService
     }
 
     for (const target of resolvedTargets) {
-      const sessionTarget =
-        await this.advancedBlockingService.resolvePauseTarget(
-          target.anchorNodeId,
-          "session",
-          true,
-        );
-      await this.technitiumService.assertSessionConfigWriteTargets([
-        sessionTarget.writeNodeId,
-      ]);
       const scheduleTarget =
         await this.advancedBlockingService.resolvePauseTarget(
           target.anchorNodeId,
           "schedule",
           true,
         );
-      if (
-        sessionTarget.targetKey !== target.writeTargetNodeId ||
-        sessionTarget.writeNodeId !== scheduleTarget.writeNodeId ||
-        scheduleTarget.targetKey !== target.writeTargetNodeId
-      ) {
+      if (scheduleTarget.targetKey !== target.writeTargetNodeId) {
         this.pauseState.markResumePending(
           target.writeTargetNodeId,
-          "The interactive session is not admitted for the durable pause write target.",
+          "The current unattended write target no longer matches durable pause ownership.",
         );
         continue;
       }
+      // Do not derive topology from the session. Admit the exact, current
+      // unattended write node immediately before the scheduled restore.
+      await this.technitiumService.assertSessionConfigWriteTargets([
+        scheduleTarget.writeNodeId,
+      ]);
       await this.tryResume(target, scheduleTarget.writeNodeId);
     }
     return this.getStatus();

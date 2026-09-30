@@ -1431,6 +1431,164 @@ describe("TechnitiumService — resolveClusterWriteTargets", () => {
       "no reachable, validated, admitted Primary",
     );
   });
+  it("uses schedule admission when resolving inside an interactive request", async () => {
+    const configs: TechnitiumNodeConfig[] = [
+      {
+        id: "dns1",
+        baseUrl: "https://dns1.test",
+        token: "",
+        groupId: "cluster",
+      },
+      {
+        id: "dns2",
+        baseUrl: "https://dns2.test",
+        token: "",
+        groupId: "cluster",
+      },
+    ];
+    service.onModuleDestroy();
+    service = new TechnitiumService(configs, new DhcpSnapshotService());
+    const admitted = (nodeIds: string[]) => ({
+      anyReady: true,
+      allReady: true,
+      groups: [
+        {
+          groupId: "cluster",
+          state: "ready" as const,
+          authenticatedNodeIds: nodeIds,
+          unreachableNodeIds: [],
+          failedNodeIds: [],
+          admittedNodeIds: {
+            interactive: nodeIds,
+            ptrRead: nodeIds,
+            dhcpRead: nodeIds,
+            primaryConfigWrite: nodeIds,
+            cacheFlush: nodeIds,
+          },
+          capabilities: {
+            ptrRead: true,
+            dhcpRead: true,
+            primaryConfigWrite: true,
+            cacheFlush: true,
+          },
+        },
+      ],
+    });
+    (
+      service as unknown as { scheduleGroupCredentials: unknown }
+    ).scheduleGroupCredentials = admitted(["dns1"]);
+    const session: AuthSession = {
+      id: "trusted-session",
+      createdAt: new Date().toISOString(),
+      lastSeenAt: Date.now(),
+      user: "admin",
+      authSource: "trusted-sso",
+      tokensByNodeId: {},
+      groupCredentials: admitted(["dns2"]),
+    };
+    const summaries = [
+      summary("dns1", {
+        domain: "cluster.example",
+        groupId: "cluster",
+        primary: true,
+      }),
+      summary("dns2", { domain: "cluster.example", groupId: "cluster" }),
+    ];
+
+    const result = await AuthRequestContext.run({ session }, () =>
+      service.resolveClusterWriteTargets(["dns2"], summaries, {
+        requireValidatedPrimary: true,
+        authMode: "schedule",
+      }),
+    );
+
+    expect(result.perCandidate.get("dns2")?.writeTarget).toBe("dns1");
+  });
+
+  it("accepts a password session only after probing Apps: Modify on the exact Primary", async () => {
+    const config: TechnitiumNodeConfig = {
+      id: "dns1",
+      baseUrl: "https://dns1.test",
+      token: "",
+      groupId: "cluster",
+    };
+    service.onModuleDestroy();
+    service = new TechnitiumService([config], new DhcpSnapshotService());
+    const probe = jest
+      .spyOn(service, "validateExplicitSessionToken")
+      .mockResolvedValue({
+        username: "admin",
+        permissions: { Apps: { canModify: true } },
+        clusterInitialized: true,
+        dnsServerDomain: "dns1",
+        clusterNodes: [
+          { name: "dns1", url: "https://dns1.test", type: "Primary" },
+        ],
+      });
+    const session: AuthSession = {
+      id: "password-session",
+      createdAt: new Date().toISOString(),
+      lastSeenAt: Date.now(),
+      user: "admin",
+      authSource: "password",
+      tokensByNodeId: { dns1: "redacted" },
+    };
+
+    await AuthRequestContext.run({ session }, () =>
+      service.assertSessionConfigWriteTargets(["dns1"]),
+    );
+
+    expect(probe).toHaveBeenCalledWith("dns1", "redacted");
+  });
+
+  it("accepts a trusted session admitted for the exact Primary", async () => {
+    const config: TechnitiumNodeConfig = {
+      id: "dns1",
+      baseUrl: "https://dns1.test",
+      token: "",
+      groupId: "cluster",
+    };
+    service.onModuleDestroy();
+    service = new TechnitiumService([config], new DhcpSnapshotService());
+    const session: AuthSession = {
+      id: "trusted-session",
+      createdAt: new Date().toISOString(),
+      lastSeenAt: Date.now(),
+      user: "admin",
+      authSource: "trusted-sso",
+      tokensByNodeId: {},
+      groupCredentials: {
+        anyReady: true,
+        allReady: true,
+        groups: [
+          {
+            groupId: "cluster",
+            state: "ready",
+            authenticatedNodeIds: ["dns1"],
+            unreachableNodeIds: [],
+            failedNodeIds: [],
+            admittedNodeIds: {
+              interactive: ["dns1"],
+              ptrRead: ["dns1"],
+              dhcpRead: ["dns1"],
+              primaryConfigWrite: ["dns1"],
+              cacheFlush: ["dns1"],
+            },
+            capabilities: {
+              ptrRead: true,
+              dhcpRead: true,
+              primaryConfigWrite: true,
+              cacheFlush: true,
+            },
+          },
+        ],
+      },
+    };
+
+    await AuthRequestContext.run({ session }, () =>
+      service.assertSessionConfigWriteTargets(["dns1"]),
+    );
+  });
 });
 
 describe("TechnitiumService — trusted SSO node readmission", () => {
