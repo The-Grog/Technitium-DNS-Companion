@@ -1,5 +1,30 @@
 # Technitium DNS Companion
 
+> ### ⚠️ Development Fork
+>
+> This fork of **Technitium DNS Companion** is used to develop and test new features before they are proposed upstream to the original [Fail-Safe/Technitium-DNS-Companion](https://github.com/Fail-Safe/Technitium-DNS-Companion) project.
+>
+> The current focus is **timed pause support for the Advanced Blocking app** ([upstream issue #129](https://github.com/Fail-Safe/Technitium-DNS-Companion/issues/129)). This branch may contain experimental or unmerged changes and should not be considered an official release.
+>
+> **Docker / GHCR**
+>
+> ```yaml
+> image: ghcr.io/the-grog/technitium-dns-companion:manual
+> ```
+>
+> Update an existing Compose deployment by replacing the upstream image with the image above, then run:
+>
+> ```bash
+> docker compose pull
+> docker compose up -d
+> ```
+>
+> Existing configuration and `/data` volumes can remain unchanged. To return to the official release, switch the image back to:
+>
+> ```yaml
+> image: ghcr.io/fail-safe/technitium-dns-companion:latest
+> ```
+
 A multi-node companion tool for aiding in day-to-day management of [Technitium DNS servers](https://technitium.com/dns/). Currently offers additional functionality for:
 
 - DNS Query Logs (DNS Logs)
