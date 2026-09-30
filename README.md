@@ -9,7 +9,7 @@
 > **Docker / GHCR**
 >
 > ```yaml
-> image: ghcr.io/the-grog/technitium-dns-companion:manual
+> image: ghcr.io/the-grog/technitium-dns-companion:main
 > ```
 >
 > Update an existing Compose deployment by replacing the upstream image with the image above, then run:
