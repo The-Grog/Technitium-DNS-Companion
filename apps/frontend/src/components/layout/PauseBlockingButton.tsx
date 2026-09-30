@@ -173,7 +173,7 @@ export function PauseBlockingButton() {
             !advancedEffectiveNodeIds.has(snap.nodeId),
         )
         .map((snap) => snap.nodeId),
-    [nodes],
+    [nodes, advancedEffectiveNodeIds],
   );
 
   const handlePause = useCallback(
