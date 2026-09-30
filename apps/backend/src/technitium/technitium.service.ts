@@ -165,8 +165,7 @@ type ZoneComparisonFieldAlways = (typeof ZONE_COMPARISON_FIELDS_ALWAYS)[number];
 type ZoneComparisonFieldConditional =
   (typeof ZONE_COMPARISON_FIELDS_CONDITIONAL)[number];
 type ZoneComparisonField =
-  | ZoneComparisonFieldAlways
-  | ZoneComparisonFieldConditional;
+  ZoneComparisonFieldAlways | ZoneComparisonFieldConditional;
 
 // Secondary forwarder types that don't have Zone Transfer/Notify settings
 const SECONDARY_FORWARDER_TYPES = new Set([
@@ -687,6 +686,11 @@ export class TechnitiumService {
     return this.nodeConfigs.map((node) => node.id);
   }
 
+  getConfiguredNodeGroupId(nodeId: string): string | undefined {
+    const node = this.nodeConfigs.find((item) => item.id === nodeId);
+    return node ? nodeGroupId(node) : undefined;
+  }
+
   async validateExplicitSessionToken(
     nodeId: string,
     token: string,
@@ -1180,6 +1184,7 @@ export class TechnitiumService {
   async resolveClusterWriteTargets(
     candidateNodeIds: string[],
     summaries?: TechnitiumNodeSummary[],
+    options?: { requireValidatedPrimary?: boolean },
   ): Promise<{
     perCandidate: Map<
       string,
@@ -1296,8 +1301,9 @@ export class TechnitiumService {
         // node's cluster has no node marked Primary in our summaries).
         // Fall back to direct write so we make progress; warn once.
         if (
-          this.nodeConfigs.length === 0 ||
-          hasImplicitNodeGrouping(this.nodeConfigs)
+          !options?.requireValidatedPrimary &&
+          (this.nodeConfigs.length === 0 ||
+            hasImplicitNodeGrouping(this.nodeConfigs))
         ) {
           this.logger.warn(
             `Cluster "${domain}" has no discoverable Primary — falling back to direct write on "${nodeId}" in implicit legacy mode.`,
@@ -5616,8 +5622,7 @@ export class TechnitiumService {
         );
         const existsOnTarget = Boolean(existingTargetScope);
         let targetScopeDetails:
-          | import("./technitium.types").TechnitiumDhcpScope
-          | undefined;
+          import("./technitium.types").TechnitiumDhcpScope | undefined;
 
         if (existsOnTarget) {
           try {
@@ -6621,6 +6626,102 @@ export class TechnitiumService {
     return "interactive";
   }
 
+  /**
+   * Verify that the request session, rather than an unattended credential, is
+   * admitted for Apps: Modify on every effective configuration write target.
+   */
+  async assertSessionConfigWriteAccess(
+    candidateNodeIds: string[],
+  ): Promise<void> {
+    const session = AuthRequestContext.getSession();
+    if (!session) {
+      throw new ForbiddenException(
+        "Apps: Modify permission could not be verified for this session.",
+      );
+    }
+    const credentials = session.groupCredentials;
+    if (!credentials && session.authSource !== "password") {
+      throw new ForbiddenException(
+        "Apps: Modify permission could not be verified for this session.",
+      );
+    }
+    const summaries = await this.listNodes({ authMode: "session" });
+    const { perCandidate } = await this.resolveClusterWriteTargets(
+      candidateNodeIds,
+      summaries,
+    );
+    for (const nodeId of candidateNodeIds) {
+      const writeTarget = perCandidate.get(nodeId)?.writeTarget;
+      const config = writeTarget
+        ? this.nodeConfigs.find((item) => item.id === writeTarget)
+        : undefined;
+      if (!writeTarget || !config) {
+        throw new ForbiddenException(
+          `Technitium node "${nodeId}" is not verified for Apps: Modify in this session.`,
+        );
+      }
+      if (!credentials) {
+        // Password logins do not have a mapped credential envelope. Probe the
+        // actual token that will be used for this resolved write endpoint;
+        // schedule credentials are never considered on this interactive path.
+        const token = session.tokensByNodeId[writeTarget];
+        if (!token) {
+          throw new ForbiddenException(
+            `Technitium node "${nodeId}" has no session token for its write target.`,
+          );
+        }
+        const probe = await this.validateExplicitSessionToken(writeTarget, token);
+        const role = this.getCredentialProbeNodeRole(config, probe);
+        if (
+          probe.permissions["Apps"]?.canModify !== true ||
+          (probe.clusterInitialized && role !== "Primary")
+        ) {
+          throw new ForbiddenException(
+            `Technitium node "${nodeId}" is not verified for Apps: Modify in this session.`,
+          );
+        }
+        continue;
+      }
+      const group = credentials.groups.find(
+        (item) => item.groupId === nodeGroupId(config),
+      );
+      if (
+        group?.state !== "ready" ||
+        group.capabilities.primaryConfigWrite !== true ||
+        !group.admittedNodeIds.primaryConfigWrite.includes(writeTarget)
+      ) {
+        throw new ForbiddenException(
+          `Technitium node "${nodeId}" is not verified for Apps: Modify in this session.`,
+        );
+      }
+    }
+  }
+  /** Verify Apps: Modify for already-resolved effective write targets. */
+  async assertSessionConfigWriteTargets(writeTargetNodeIds: string[]): Promise<void> {
+    const session = AuthRequestContext.getSession();
+    const credentials = session?.groupCredentials;
+    if (!session || (!credentials && session.authSource !== "password")) {
+      throw new ForbiddenException("Apps: Modify permission could not be verified for this session.");
+    }
+    for (const writeTarget of new Set(writeTargetNodeIds)) {
+      const config = this.nodeConfigs.find((item) => item.id === writeTarget);
+      if (!config) throw new ForbiddenException(`Technitium node "${writeTarget}" is not verified for Apps: Modify in this session.`);
+      if (!credentials) {
+        const token = session.tokensByNodeId[writeTarget];
+        if (!token) throw new ForbiddenException("Apps: Modify permission could not be verified for this session.");
+        const probe = await this.validateExplicitSessionToken(writeTarget, token);
+        const role = this.getCredentialProbeNodeRole(config, probe);
+        if (probe.permissions["Apps"]?.canModify !== true || (probe.clusterInitialized && role !== "Primary")) {
+          throw new ForbiddenException(`Technitium node "${writeTarget}" is not verified for Apps: Modify in this session.`);
+        }
+        continue;
+      }
+      const group = credentials.groups.find((item) => item.groupId === nodeGroupId(config));
+      if (group?.state !== "ready" || group.capabilities.primaryConfigWrite !== true || !group.admittedNodeIds.primaryConfigWrite.includes(writeTarget)) {
+        throw new ForbiddenException(`Technitium node "${writeTarget}" is not verified for Apps: Modify in this session.`);
+      }
+    }
+  }
   private assertSessionNodeAdmitted(
     session: ReturnType<typeof AuthRequestContext.getSession>,
     node: TechnitiumNodeConfig,

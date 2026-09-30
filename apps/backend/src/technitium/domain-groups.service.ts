@@ -1471,6 +1471,7 @@ export class DomainGroupsService implements OnModuleInit {
             await this.advancedBlockingService.setConfig(
               summary.id,
               nextConfig,
+              snapshot.configRevision,
             );
           }
           // Update tracking after successful setConfig (or immediately if no changes).
@@ -1792,7 +1793,11 @@ export class DomainGroupsService implements OnModuleInit {
             data.groups,
             domainsMode,
           );
-          await this.advancedBlockingService.setConfig(nodeId, newConfig);
+          await this.advancedBlockingService.setConfig(
+            nodeId,
+            newConfig,
+            snapshot.configRevision,
+          );
           result.domains.groupsUpdated = updatedGroups;
           result.domains.groupsSkipped = skippedGroups;
         }
