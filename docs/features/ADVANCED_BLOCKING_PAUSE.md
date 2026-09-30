@@ -42,6 +42,48 @@ are reported in the operation's probe errors; they are not silently counted as
 paused or given unattended write ownership. A successful app inventory can
 distinguish an installation without Advanced Blocking from an unreadable node.
 
+## Schedule credentials in native clusters
+
+Technitium tokens can be node-local. A scalar schedule token or version-1 group
+token issued by the confirmed current Primary is sufficient for Primary-only
+Advanced Blocking writes when it has Apps: Modify. A rejected or unreachable
+Secondary does not revoke that capability. Companion uses the authenticated
+Primary's topology response for the cluster and rechecks the exact target's
+credential and role immediately before each schedule config POST.
+
+Schedule status exposes `primaryCredential`, `failoverCoverage`, and
+`secondaryCredentialUnavailableNodeIds`, alongside the existing admitted,
+failed, and unreachable node lists. A Primary can be ready with partial failover
+coverage. Cache flush admission remains per node; an unavailable Secondary is
+not authorized for cache deletion by the Primary's token.
+
+Scalar and version-1 group tokens do **not** provide unattended failover when
+tokens are node-local. If a different node becomes Primary, writes fail closed.
+Configure a schedule token issued by the new Primary, restart Companion to load
+the changed secret, and revalidate DNS Schedules credentials. Existing pause
+ownership is retained for recovery; it is not proof that restoration succeeded.
+
+Missing or unusable admission returns HTTP 503 with credential/routing guidance.
+The dependency lockfile keeps Nest's common package shared with its HTTP layer,
+so these exceptions retain their intended HTTP status and message.
+
+### Proposed per-node credential map (not implemented)
+
+A future version-2 schedule map can use
+`groups[groupId] = { username, nodes: { [configuredNodeId]: { token } } }`.
+The loader must reject unknown/cross-group node IDs, duplicate keys, mixed
+group-token/node-token entries, and invalid schemas without including secrets
+in errors. Version-1 and scalar loading must remain backward compatible.
+
+Both initial validation and returning-node recovery must select only the token
+for the exact configured endpoint. A validated topology determines the current
+Primary; only its independently authenticated token and Apps: Modify permission
+admit a write. No other node's token or interactive session may be substituted.
+Coverage is complete only when all potential configured Primary endpoints have
+validated credentials and consistent topology/identity. V2 must be implemented
+across loading, request selection, revalidation, status, and failover tests
+together; this fix does not accept a version-2 map.
+
 ## Other writers and UI
 
 Configuration Sync reads configured root state underneath any pause override,

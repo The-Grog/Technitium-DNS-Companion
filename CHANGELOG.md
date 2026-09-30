@@ -11,6 +11,13 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 
+- Schedule credentials valid on the confirmed Primary remain write-capable when
+  a Secondary rejects the node-local token or is unreachable. Status reports
+  partial failover coverage, and writes revalidate the exact Primary credential.
+- Deduplicated Nest common in the lockfile so HTTP exceptions retain their status
+  and actionable message at the API boundary.
+- Advanced Blocking target admission failures return a descriptive HTTP 503 with
+  the routing reason and credential guidance instead of a generic HTTP 500.
 - Advanced Blocking pauses now validate API responses, verify restoration before
   releasing ownership, and retry early resume requests after failures or restart.
 - All Advanced Blocking writers require confirmed topology and revalidate the

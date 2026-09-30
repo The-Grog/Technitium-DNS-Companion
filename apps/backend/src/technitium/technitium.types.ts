@@ -19,6 +19,7 @@ export interface TechnitiumSessionPermission {
 
 export interface TechnitiumCredentialProbe {
   username: string;
+  topologyKnown?: boolean;
   permissions: Record<string, TechnitiumSessionPermission | undefined>;
   clusterInitialized: boolean;
   clusterDomain?: string;

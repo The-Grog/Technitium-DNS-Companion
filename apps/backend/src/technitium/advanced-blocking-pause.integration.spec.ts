@@ -274,9 +274,9 @@ describe("Advanced Blocking pause recovery and writer integration", () => {
         calculateAdvancedBlockingConfigRevision(raw.a),
       ),
     ).rejects.toThrow("No admitted");
-    await expect(advanced.activatePauseRoot("a", "schedule")).rejects.toThrow(
-      "No admitted",
-    );
+    const activation = advanced.activatePauseRoot("a", "schedule");
+    await expect(activation).rejects.toMatchObject({ status: 503 });
+    await expect(activation).rejects.toThrow("Cluster topology is unavailable");
     expect(posts).toEqual([]);
   });
 

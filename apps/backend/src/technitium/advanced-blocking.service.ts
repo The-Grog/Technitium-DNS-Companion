@@ -354,11 +354,20 @@ export class AdvancedBlockingService {
         summaries,
         { requireValidatedPrimary, authMode },
       );
-    const writeNodeId = perCandidate.get(nodeId)?.writeTarget;
-    if (!writeNodeId)
-      throw new Error(
-        `No admitted Advanced Blocking write target is available for "${nodeId}".`,
+    const candidate = perCandidate.get(nodeId);
+    const writeNodeId = candidate?.writeTarget;
+    if (!writeNodeId) {
+      const reason =
+        candidate?.reason ??
+        "A current, authorized write target could not be validated.";
+      const guidance =
+        authMode === "schedule"
+          ? " Check TECHNITIUM_SCHEDULE_TOKEN (or TECHNITIUM_SCHEDULE_TOKEN_MAP_FILE for explicit groups), Apps: Modify permission, and the DNS Schedules token status."
+          : " Check node connectivity, cluster topology, and the session's Apps: Modify permission.";
+      throw new ServiceUnavailableException(
+        `No admitted Advanced Blocking write target is available for "${nodeId}". ${reason}${guidance}`,
       );
+    }
     const summary = summaries.find((item) => item.id === writeNodeId);
     const domain = summary?.clusterState?.initialized
       ? summary.clusterState.domain

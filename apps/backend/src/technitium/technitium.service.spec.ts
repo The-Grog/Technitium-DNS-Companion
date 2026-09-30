@@ -2002,7 +2002,7 @@ describe("TechnitiumService — cluster probe failover", () => {
     internals.request = jest
       .fn()
       .mockResolvedValueOnce(topology("dns1"))
-      .mockResolvedValueOnce(topology("dns2"));
+      .mockResolvedValue(topology("dns2"));
 
     const first = await service.listNodes({ authMode: "schedule" });
     const firstPlan = await service.resolveClusterWriteTargets(
