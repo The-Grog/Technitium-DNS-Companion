@@ -63,11 +63,10 @@ export class AdvancedBlockingPauseService
     const interactiveNodes = await this.technitiumService.listNodes({
       authMode: "session",
     });
-    // Installed-but-disabled apps are intentionally not a pause target. The
-    // config read is performed through the existing Advanced Blocking service.
+    // Topology summaries intentionally do not claim app capability. Probe the
+    // live root through the canonical Advanced Blocking mutation path instead.
     const eligible: string[] = [];
     for (const node of interactiveNodes) {
-      if (!node.hasAdvancedBlocking) continue;
       try {
         const live = await this.advancedBlockingService.verifyPauseRoot(
           node.id,
@@ -80,12 +79,13 @@ export class AdvancedBlockingPauseService
           eligible.push(node.id);
         }
       } catch {
-        // Admission below is authoritative; an unreadable node must not be
-        // selected by guesswork as an Advanced Blocking pause target.
+        // An unavailable or unreadable app is never selected by guesswork.
       }
     }
     if (eligible.length === 0) {
-      return { ...this.getStatus(), requestedMinutes: minutes };
+      throw new BadRequestException(
+        "No eligible Advanced Blocking targets are available to pause.",
+      );
     }
 
     const expiresAt = new Date(Date.now() + minutes * 60_000).toISOString();

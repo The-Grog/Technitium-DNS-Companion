@@ -40,16 +40,19 @@ describe("AdvancedBlockingPauseService", () => {
     };
   };
 
-  it("keeps Built-in-only deployments on the existing pause path", async () => {
+  it("fails closed when no session-visible node has a readable Advanced Blocking root", async () => {
     const { service, technitium, advancedBlocking } = create();
-    technitium.listNodes.mockResolvedValue([
-      { id: "built-in", hasAdvancedBlocking: false },
-    ]);
-    await service.pause(15);
+    technitium.listNodes.mockResolvedValue([{ id: "built-in" }]);
+    advancedBlocking.verifyPauseRoot.mockRejectedValue(
+      new Error("Advanced Blocking is unavailable"),
+    );
+
+    await expect(service.pause(15)).rejects.toThrow(
+      "No eligible Advanced Blocking targets",
+    );
     expect(technitium.assertSessionConfigWriteTargets).not.toHaveBeenCalled();
     expect(advancedBlocking.activatePauseRoot).not.toHaveBeenCalled();
   });
-
   it("checks interactive Apps Modify admission before schedule credentials", async () => {
     const { service, technitium, advancedBlocking } = create();
     technitium.listNodes.mockResolvedValue([
@@ -170,5 +173,104 @@ describe("AdvancedBlockingPauseService", () => {
       "replacement-primary",
     );
     expect(resolved).toMatchObject({ anchorNodeId: "replacement-primary" });
+  });
+
+  it("uses the live root probe when topology summaries omit hasAdvancedBlocking", async () => {
+    const { service, pauseState, technitium, advancedBlocking } = create();
+    const targets: Array<{
+      writeTargetNodeId: string;
+      anchorNodeId: string;
+      status: "activation-pending" | "active";
+      expiresAt: string;
+      previousEnableBlockingPresent?: boolean;
+      previousEnableBlockingValue?: boolean;
+      updatedAt: string;
+    }> = [];
+    pauseState.list.mockImplementation(() => targets);
+    pauseState.get.mockImplementation((targetKey: string) =>
+      targets.find((target) => target.writeTargetNodeId === targetKey),
+    );
+    pauseState.beginPause.mockImplementation(
+      (targetKey: string, anchorNodeId: string, expiresAt: string) => {
+        targets.push({
+          writeTargetNodeId: targetKey,
+          anchorNodeId,
+          status: "activation-pending",
+          expiresAt,
+          updatedAt: new Date().toISOString(),
+        });
+      },
+    );
+    technitium.listNodes.mockResolvedValue([{ id: "dns1" }]);
+    advancedBlocking.verifyPauseRoot.mockResolvedValue({
+      targetKey: "node:dns1",
+      writeNodeId: "dns1",
+      paused: false,
+    });
+    advancedBlocking.resolvePauseTarget.mockResolvedValue({
+      targetKey: "node:dns1",
+      writeNodeId: "dns1",
+    });
+    advancedBlocking.activatePauseRoot.mockImplementation(
+      (
+        _nodeId: string,
+        _authMode: string,
+        beforeActivate: (target: {
+          targetKey: string;
+          writeNodeId: string;
+        }) => void,
+      ) => {
+        beforeActivate({ targetKey: "node:dns1", writeNodeId: "dns1" });
+        targets[0].status = "active";
+        targets[0].previousEnableBlockingPresent = true;
+        targets[0].previousEnableBlockingValue = true;
+      },
+    );
+
+    const result = await service.pause(15);
+
+    expect(advancedBlocking.verifyPauseRoot).toHaveBeenCalledWith(
+      "dns1",
+      "session",
+    );
+    expect(advancedBlocking.activatePauseRoot).toHaveBeenCalledWith(
+      "dns1",
+      "schedule",
+      expect.any(Function),
+    );
+    expect(result).toMatchObject({
+      paused: true,
+      confirmedPausedTargetCount: 1,
+      pendingTargetCount: 0,
+    });
+  });
+
+  it("skips an unavailable app while pausing another live enabled root", async () => {
+    const { service, technitium, advancedBlocking } = create();
+    technitium.listNodes.mockResolvedValue([{ id: "offline" }, { id: "dns1" }]);
+    advancedBlocking.verifyPauseRoot
+      .mockRejectedValueOnce(new Error("app unavailable"))
+      .mockResolvedValueOnce({
+        targetKey: "node:dns1",
+        writeNodeId: "dns1",
+        paused: false,
+      });
+    advancedBlocking.resolvePauseTarget.mockResolvedValue({
+      targetKey: "node:dns1",
+      writeNodeId: "dns1",
+    });
+
+    await service.pause(15);
+
+    expect(advancedBlocking.resolvePauseTarget).toHaveBeenCalledWith(
+      "dns1",
+      "session",
+      true,
+    );
+    expect(advancedBlocking.activatePauseRoot).toHaveBeenCalledWith(
+      "dns1",
+      "schedule",
+      expect.any(Function),
+    );
   });
 });

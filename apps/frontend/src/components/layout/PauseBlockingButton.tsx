@@ -183,32 +183,54 @@ export function PauseBlockingButton() {
       setBusy(true);
       try {
         if (shouldManageAdvancedBlocking) {
-          const status = await technitium.pauseAdvancedBlocking(minutes);
-          await technitium.reloadAdvancedBlocking().catch(() => undefined);
-          const errors = status.targets
-            .filter((target) => target.lastError)
-            .map(
-              (target) => `${target.writeTargetNodeId}: ${target.lastError}`,
-            );
-          if (errors.length) {
+          try {
+            const status = await technitium.pauseAdvancedBlocking(minutes);
+            await technitium.reloadAdvancedBlocking().catch(() => undefined);
+            const errors = status.targets
+              .filter((target) => target.lastError)
+              .map(
+                (target) => `${target.writeTargetNodeId}: ${target.lastError}`,
+              );
+            if (errors.length) {
+              pushToast({
+                message: `Paused with errors: ${errors.join("; ")}`,
+                tone: "error",
+              });
+            } else if (
+              status.paused &&
+              status.confirmedPausedTargetCount > 0
+            ) {
+              const preset = DURATION_PRESETS.find(
+                (p) => p.minutes === minutes,
+              );
+              pushToast({
+                message: `Advanced Blocking paused for ${preset?.label ?? `${minutes} min`}.`,
+                tone: "success",
+              });
+            } else {
+              pushToast({
+                message: "Advanced Blocking pause was not confirmed.",
+                tone: "error",
+              });
+            }
+          } catch (error) {
             pushToast({
-              message: `Paused with errors: ${errors.join("; ")}`,
+              message: `Failed to pause Advanced Blocking: ${error instanceof Error ? error.message : "failed"}`,
               tone: "error",
-            });
-          } else {
-            const preset = DURATION_PRESETS.find((p) => p.minutes === minutes);
-            pushToast({
-              message: `Advanced Blocking paused for ${preset?.label ?? `${minutes} min`}.`,
-              tone: "success",
             });
           }
         }
-        if (targetNodeIdsForPause.length === 0 && !shouldManageAdvancedBlocking) {
-          pushToast({
-            message: "No nodes with blocking enabled to pause.",
-            tone: "info",
-          });
+
+        if (targetNodeIdsForPause.length === 0) {
+          if (!shouldManageAdvancedBlocking) {
+            pushToast({
+              message: "No nodes with blocking enabled to pause.",
+              tone: "info",
+            });
+          }
+          return;
         }
+
         const errors: string[] = [];
         await Promise.all(
           targetNodeIdsForPause.map(async (nodeId) => {
@@ -234,11 +256,6 @@ export function PauseBlockingButton() {
             tone: "success",
           });
         }
-      } catch (error) {
-        pushToast({
-          message: `Failed to pause blocking: ${error instanceof Error ? error.message : "failed"}`,
-          tone: "error",
-        });
       } finally {
         setBusy(false);
       }

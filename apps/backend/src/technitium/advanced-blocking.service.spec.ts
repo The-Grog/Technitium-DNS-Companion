@@ -354,3 +354,69 @@ describe("AdvancedBlockingService JSONC integration", () => {
     expect(getStoredRaw()).toBe(editedRaw);
   });
 });
+
+describe("AdvancedBlockingService pause root lifecycle", () => {
+  it("writes a confirmed pause and restores the captured root value", async () => {
+    let storedRaw =
+      '{"enableBlocking":true,"localEndPointGroupMap":{},"networkGroupMap":{},"groups":[]}';
+    const pauseState = {
+      get: jest.fn(() => ({
+        targetKey: "node:node-a",
+        previousEnableBlockingPresent: true,
+        previousEnableBlockingValue: true,
+      })),
+      captureOriginal: jest.fn(),
+      activate: jest.fn(),
+    };
+    const executeAction = jest.fn(
+      (
+        _nodeId: string,
+        request: { method: string; url: string; body?: string },
+      ) => {
+        if (
+          request.method === "GET" &&
+          request.url === "/api/apps/config/get"
+        ) {
+          return Promise.resolve({
+            status: "ok",
+            response: { config: storedRaw },
+          });
+        }
+        if (
+          request.method === "POST" &&
+          request.url === "/api/apps/config/set"
+        ) {
+          storedRaw = new URLSearchParams(request.body).get("config") ?? "";
+          return Promise.resolve({ status: "ok" });
+        }
+        return Promise.reject(new Error("Unexpected Technitium request."));
+      },
+    );
+    const service = new AdvancedBlockingService(
+      { executeAction } as unknown as TechnitiumService,
+      undefined,
+      undefined,
+      pauseState as never,
+    );
+
+    await service.activatePauseRoot("node-a", "session");
+
+    expect(parseAdvancedBlockingJsonc(storedRaw)).toMatchObject({
+      enableBlocking: false,
+    });
+    expect(pauseState.captureOriginal).toHaveBeenCalledWith(
+      "node:node-a",
+      "node-a",
+      true,
+      true,
+    );
+
+    const onRestored = jest.fn();
+    await service.restorePauseRoot("node-a", true, "session", onRestored);
+
+    expect(parseAdvancedBlockingJsonc(storedRaw)).toMatchObject({
+      enableBlocking: true,
+    });
+    expect(onRestored).toHaveBeenCalledWith("node:node-a");
+  });
+});
