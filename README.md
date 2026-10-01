@@ -1,35 +1,10 @@
 # Technitium DNS Companion
 
-> ### ⚠️ Development Fork
->
-> This fork of **Technitium DNS Companion** is used to develop and test new features before they are proposed upstream to the original [Fail-Safe/Technitium-DNS-Companion](https://github.com/Fail-Safe/Technitium-DNS-Companion) project.
->
-> The current focus is **timed pause support for the Advanced Blocking app** ([upstream issue #129](https://github.com/Fail-Safe/Technitium-DNS-Companion/issues/129)). This branch may contain experimental or unmerged changes and should not be considered an official release.
->
-> **Docker / GHCR**
->
-> ```yaml
-> image: ghcr.io/the-grog/technitium-dns-companion:main
-> ```
->
-> Update an existing Compose deployment by replacing the upstream image with the image above, then run:
->
-> ```bash
-> docker compose pull
-> docker compose up -d
-> ```
->
-> Existing configuration and `/data` volumes can remain unchanged. To return to the official release, switch the image back to:
->
-> ```yaml
-> image: ghcr.io/fail-safe/technitium-dns-companion:latest
-> ```
-
 A multi-node companion tool for aiding in day-to-day management of [Technitium DNS servers](https://technitium.com/dns/). Currently offers additional functionality for:
 
 - DNS Query Logs (DNS Logs)
 - Advanced Blocking App upkeep (DNS Filtering)
-- Built-in Blocking pause (temporary-disable timer surfaced in the header)
+- Blocking pause - timed pause/resume support for Built-in Blocking and Advanced Blocking
 - Domain Groups (named domain sets that bind to Advanced Blocking groups)
 - DNS Schedules (time-window automation for Advanced Blocking groups)
 - Log Alerts (rule-based SMTP notifications on query log events)
@@ -252,7 +227,7 @@ These features write data to disk and are disabled unless explicitly enabled/con
 - **Multi-Node Management** - Monitor and manage multiple servers from one interface
 - **Query Logs** - View combined query logs from all configured nodes (optional SQLite stored logs for accurate time-window browsing; see [docs/features/query-logs/SQLITE_ROLLING_QUERY_LOG_STORE.md](docs/features/query-logs/SQLITE_ROLLING_QUERY_LOG_STORE.md))
 - **Advanced Blocking** - Manage domain allow/block lists (requires Advanced Blocking App), with optional DNS Filtering History (snapshots) for quick rollback
-- **Pause Built-in Blocking** - Persistent header pill that surfaces Technitium's temporary-disable timer at the top level; preset durations (1m–4h), a live countdown while paused, and multi-node fan-out so a pause/resume applies across every blocking node at once
+- **Pause Blocking** - Timed pause/resume controls for Built-in Blocking and Advanced Blocking, with persistent recovery for Advanced Blocking across browser closure and Companion restarts. See [Advanced Blocking pause recovery](docs/features/ADVANCED_BLOCKING_PAUSE.md).
 - **Domain Groups** - SQLite-backed named domain sets that bind to Advanced Blocking groups; drag-and-drop bindings, apply tracking with zero-data-loss semantics, and unified export/import
 - **DNS Schedules** - Time-window automation that toggles Advanced Blocking groups on a daily/weekly schedule (with timezone and overnight-window support), optional email notifications with templated subjects/bodies, and drift detection
   - [Recovery after uncertain DNS writes](docs/features/DNS_SCHEDULE_RECOVERY.md)
