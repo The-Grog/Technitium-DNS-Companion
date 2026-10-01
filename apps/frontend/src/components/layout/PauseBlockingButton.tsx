@@ -204,6 +204,14 @@ export function PauseBlockingButton() {
                 message: `Paused with errors: ${errors.join("; ")}`,
                 tone: "error",
               });
+            } else if (status.pendingTargetCount > 0) {
+              pushToast({
+                message:
+                  status.confirmedPausedTargetCount > 0
+                    ? "Advanced Blocking is partially paused; confirmation is still pending for some targets."
+                    : "Advanced Blocking pause is pending confirmation. Companion will retry automatically.",
+                tone: "info",
+              });
             } else if (status.paused && status.confirmedPausedTargetCount > 0) {
               const preset = DURATION_PRESETS.find(
                 (p) => p.minutes === minutes,
@@ -412,6 +420,12 @@ export function PauseBlockingButton() {
       </button>
       {menuOpen && (
         <div className="app-header__pause-menu" role="menu">
+          {shouldManageAdvancedBlocking && (
+            <p className="app-header__pause-note" role="note">
+              Advanced Blocking pauses all app groups. Companion overrides
+              external enables until resume is confirmed.
+            </p>
+          )}
           {canResume && (
             <>
               <button

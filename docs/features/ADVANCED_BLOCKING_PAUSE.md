@@ -5,6 +5,29 @@ Companion owns the Advanced Blocking timer. It persists the original root
 The browser session is needed only for interactive admission; reconciliation uses
 the configured schedule credential.
 
+## Scope, timing, and external edits
+
+A pause changes the app-wide root `enableBlocking` flag. It affects every
+Advanced Blocking group on each admitted target; this header control is not a
+per-group policy override. Both enabled blocking methods are paused when a node
+uses Built-in and Advanced Blocking together. An intentionally false Advanced
+Blocking root is skipped unless Companion already owns its pause.
+
+Companion retains ownership of that root until restoration is confirmed.
+External enables during an active pause are overridden on reconciliation.
+During recovery, Companion still restores the saved original true, false, or
+absent root. Use Resume now before intentionally changing the root outside
+Companion. A failed confirmation does not release ownership. A later read that
+already matches the saved root completes recovery without another config write.
+
+Expiry uses the Companion server's wall clock. Reconciliation runs every
+15 seconds, so healthy expiry can lag by roughly one tick plus API/schedule
+processing time. The UI polls status every 30 seconds and can display
+"expiring" until it observes confirmed restoration. Outages or incomplete
+schedule recovery can delay restoration further. Keep the server clock
+synchronized; multiple Companion instances sharing pause ownership are not
+supported.
+
 ## Writes and topology
 
 Interactive pause, extension, and Resume now require Apps: Modify on the exact
@@ -91,6 +114,12 @@ so a source pause cannot become a destination's permanent disabled state.
 It also passes the destination revision to the shared mutation path.
 Domain Groups apply/import, rule optimization, DNS Schedules, comment editing,
 raw saves, and History restore retain a pause-owned false root.
+
+Temporary Overrides use the schedule evaluator to maintain group rule entries.
+They continue applying and expiring while the app root is paused; they do not
+override the false root. Before restoration, the evaluator removes expired
+override/schedule entries. If that recovery is incomplete, ownership is retained.
+An allow rule cannot re-enable app-wide blocking while the root is false.
 
 The header handles Built-in and Advanced Blocking independently, including when
 both are enabled on one node. Pending restoration keeps Resume now visible.

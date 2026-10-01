@@ -11,6 +11,13 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 
+- Pause restoration avoids another config write when a fresh read already confirms
+  the original root; ambiguous outcomes continue to retain durable ownership.
+- Failed legacy pause migrations roll back before retry. Extensions remain
+  activation-pending until reverified, and pending UI feedback distinguishes
+  unconfirmed work from errors.
+- Clarified app-wide pause scope, external-edit ownership, and expiry timing;
+  removed the unused pause health type.
 - Schedule credentials valid on the confirmed Primary remain write-capable when
   a Secondary rejects the node-local token or is unreachable. Status reports
   partial failover coverage, and writes revalidate the exact Primary credential.

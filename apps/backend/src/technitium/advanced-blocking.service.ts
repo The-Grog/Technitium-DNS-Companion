@@ -531,6 +531,20 @@ export class AdvancedBlockingService {
           authMode,
         );
         const rawConfig = envelope?.response?.config || "{}";
+        const liveRoot = parseAdvancedBlockingJsonc(rawConfig) as Record<
+          string,
+          unknown
+        >;
+        const alreadyRestored =
+          previousValue === undefined
+            ? !Object.hasOwn(liveRoot, "enableBlocking")
+            : liveRoot.enableBlocking === previousValue;
+        if (alreadyRestored) {
+          // A prior write may have succeeded before its confirmation failed.
+          // This fresh read confirms recovery without another config POST.
+          onRestored(target.targetKey);
+          return;
+        }
         await this.writeRawConfig(
           target.writeNodeId,
           patchAdvancedBlockingRootEnableBlocking(rawConfig, previousValue),

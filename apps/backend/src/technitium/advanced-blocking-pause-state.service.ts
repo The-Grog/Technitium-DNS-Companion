@@ -49,8 +49,9 @@ export class AdvancedBlockingPauseStateService implements OnModuleInit {
     // The initial feature schema used a stricter status CHECK constraint, so
     // upgrade it by rebuilding once instead of issuing an invalid UPDATE.
     if (!names.has("anchor_node_id")) {
-      db.exec(`
-        BEGIN;
+      db.exec("BEGIN;");
+      try {
+        db.exec(`
         CREATE TABLE advanced_blocking_pauses_next (
           write_target_node_id TEXT PRIMARY KEY, anchor_node_id TEXT,
           last_resolved_node_id TEXT,
@@ -68,8 +69,12 @@ export class AdvancedBlockingPauseStateService implements OnModuleInit {
         DROP TABLE advanced_blocking_pauses;
         ALTER TABLE advanced_blocking_pauses_next RENAME TO advanced_blocking_pauses;
         CREATE INDEX IF NOT EXISTS idx_advanced_blocking_pauses_expiry ON advanced_blocking_pauses(expires_at);
-        COMMIT;
       `);
+        db.exec("COMMIT;");
+      } catch (error) {
+        db.exec("ROLLBACK;");
+        throw error;
+      }
     } else {
       if (!names.has("last_resolved_node_id"))
         db.exec(
@@ -109,7 +114,7 @@ export class AdvancedBlockingPauseStateService implements OnModuleInit {
     const now = new Date().toISOString();
     this.requireDb()
       .prepare(
-        `INSERT INTO advanced_blocking_pauses (write_target_node_id, anchor_node_id, status, expires_at, updated_at, capture_before_write) VALUES (?, ?, 'activation-pending', ?, ?, 1) ON CONFLICT(write_target_node_id) DO UPDATE SET anchor_node_id = excluded.anchor_node_id, expires_at = excluded.expires_at, status = CASE WHEN advanced_blocking_pauses.status = 'resume-pending' THEN 'activation-pending' ELSE advanced_blocking_pauses.status END, last_error = NULL, updated_at = excluded.updated_at`,
+        `INSERT INTO advanced_blocking_pauses (write_target_node_id, anchor_node_id, status, expires_at, updated_at, capture_before_write) VALUES (?, ?, 'activation-pending', ?, ?, 1) ON CONFLICT(write_target_node_id) DO UPDATE SET anchor_node_id = excluded.anchor_node_id, expires_at = excluded.expires_at, status = 'activation-pending', last_error = NULL, updated_at = excluded.updated_at`,
       )
       .run(targetKey, anchorNodeId, expiresAt, now);
   }

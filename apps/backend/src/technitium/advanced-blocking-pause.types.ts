@@ -3,14 +3,6 @@ export type AdvancedBlockingPauseTargetStatus =
   | "active"
   | "resume-pending";
 
-/** Live status is separate from durable ownership; only active is confirmed paused. */
-export type AdvancedBlockingPauseTargetHealth =
-  | "confirmed-paused"
-  | "activation-pending"
-  | "resume-pending"
-  | "live-drift"
-  | "error";
-
 export interface AdvancedBlockingPauseTarget {
   /** Stable cluster/group ownership key, not a transient Primary node ID. */
   writeTargetNodeId: string;

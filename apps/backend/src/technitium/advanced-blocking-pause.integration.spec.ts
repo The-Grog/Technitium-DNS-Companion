@@ -24,6 +24,7 @@ describe("Advanced Blocking pause recovery and writer integration", () => {
   let reads: number;
   let editOnRead: number;
   let failedRead: boolean;
+  let failOnRead: number;
   let failedWrite: boolean;
   let ignoredWrite: boolean;
   let posts: string[];
@@ -60,13 +61,14 @@ describe("Advanced Blocking pause recovery and writer integration", () => {
     raw = { a: initial, b: initial };
     failedRead = failedWrite = ignoredWrite = false;
     reads = 0;
+    failOnRead = -1;
     editOnRead = -1;
     posts = [];
     jest.spyOn(tech, "executeAction").mockImplementation((id, request) => {
       if (request.method === "GET") {
         if (++reads === editOnRead)
           raw[id] = raw[id].replace('"keep"', '"concurrent"');
-        return failedRead
+        return failedRead || reads === failOnRead
           ? { status: "error", errorMessage: "read failed" }
           : { status: "ok", response: { config: raw[id] } };
       }
@@ -164,6 +166,59 @@ describe("Advanced Blocking pause recovery and writer integration", () => {
       expect(state.list()).toEqual([]);
     },
   );
+
+  it.each([true, undefined])(
+    "confirms an already-restored %s root without another POST after ambiguous confirmation",
+    async (original) => {
+      if (original === undefined)
+        raw.a = initial.replace('"enableBlocking":true,', "");
+      await activate();
+      failOnRead = reads + 2;
+      await pause.resumeNow();
+      expect(state.get("node:a")?.status).toBe("resume-pending");
+      expect(rootFlag("a")).toBe(original);
+      const count = posts.length;
+      raw.a = raw.a.replace('"keep"', '"operator-edit"');
+      await tick();
+      expect(posts).toHaveLength(count);
+      expect(raw.a).toContain('"operator-edit"');
+      expect(state.list()).toEqual([]);
+    },
+  );
+
+  it("skips intentionally disabled roots without ownership", async () => {
+    raw.a = initial.replace('"enableBlocking":true', '"enableBlocking":false');
+    await pause.pause(5);
+    expect(posts).toEqual(["b"]);
+    expect(state.get("node:a")).toBeUndefined();
+    expect(rootFlag("a")).toBe(false);
+    expect(state.get("node:b")?.status).toBe("active");
+  });
+
+  it("recovers activation after write success and failed confirmation without recapturing false", async () => {
+    failOnRead = 2;
+    await expect(activate()).rejects.toThrow("read failed");
+    expect(rootFlag("a")).toBe(false);
+    expect(state.get("node:a")?.previousEnableBlockingValue).toBe(true);
+    state = new AdvancedBlockingPauseStateService({ db } as never);
+    state.onModuleInit();
+    advanced = new AdvancedBlockingService(tech, undefined, undefined, state);
+    pause = new AdvancedBlockingPauseService(
+      state,
+      advanced,
+      {
+        runNow: () => Promise.resolve({ errored: 0, pendingRecoveryCount: 0 }),
+      } as never,
+      tech,
+    );
+    await tick();
+    expect(state.get("node:a")?.status).toBe("active");
+    expect(state.get("node:a")?.previousEnableBlockingValue).toBe(true);
+    state.requestResume("node:a");
+    await tick();
+    expect(rootFlag("a")).toBe(true);
+    expect(state.list()).toEqual([]);
+  });
 
   it("cancels expired new-format uncaptured intent without a config write", async () => {
     state.beginPause("node:a", "a", new Date(0).toISOString());

@@ -313,6 +313,47 @@ describe("PauseBlockingButton recovery and mixed methods", () => {
     };
   }
 
+  it.each([0, 1])(
+    "reports pending confirmation informationally with %i confirmed targets",
+    async (confirmed) => {
+      const ctx = context();
+      state.current = {
+        ...ctx,
+        builtInBlocking: { nodes: [] },
+        pauseAdvancedBlocking: vi.fn().mockResolvedValue({
+          ...pause,
+          paused: confirmed > 0,
+          confirmedPausedTargetCount: confirmed,
+          pendingTargetCount: 1,
+          targets: [{ ...pause.targets[0], status: "activation-pending" }],
+        }),
+      };
+      render(<PauseBlockingButton />);
+      fireEvent.click(screen.getByRole("button", { name: "Pause blocking" }));
+      expect(screen.getByRole("note")).toHaveTextContent(
+        "pauses all app groups",
+      );
+      expect(screen.getByRole("note")).toHaveTextContent(
+        "until resume is confirmed",
+      );
+      fireEvent.click(screen.getByRole("menuitem", { name: "5 minutes" }));
+      await waitFor(() =>
+        expect(toast.pushToast).toHaveBeenCalledWith(
+          expect.objectContaining({
+            tone: "info",
+            message: expect.stringContaining("pending"),
+          }),
+        ),
+      );
+      expect(toast.pushToast).not.toHaveBeenCalledWith(
+        expect.objectContaining({ tone: "success" }),
+      );
+      expect(toast.pushToast).not.toHaveBeenCalledWith(
+        expect.objectContaining({ tone: "error" }),
+      );
+    },
+  );
+
   it("pauses both methods on the same node", async () => {
     const ctx = context();
     state.current = ctx;
