@@ -14,6 +14,8 @@ All notable changes to this project will be documented in this file.
 - Timed Advanced Blocking pause through the existing header controls, with duration
   presets, countdown, extension, Resume now, and durable recovery across browser
   closure and Companion restarts. Built-in Blocking retains its native timer.
+- Persistent recovery warnings show the affected targets and causes when Advanced
+  Blocking restoration fails or remains unconfirmed beyond expiry.
 
 ### Changed
 

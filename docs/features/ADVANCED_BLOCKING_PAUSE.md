@@ -125,10 +125,43 @@ The header handles Built-in and Advanced Blocking independently, including when
 both are enabled on one node. Pending restoration keeps Resume now visible.
 Mixed-operation errors remain errors even when another method succeeds.
 
+An overdue or resume-pending target keeps a recovery banner visible on app pages.
+The banner lists affected targets, the latest reported cause, and credential/
+connectivity guidance. A reported failure also turns the header indicator red;
+otherwise restoration is labeled unconfirmed rather than failed. The warning
+remains across reloads until durable ownership is cleared or a newly admitted
+pause replaces the resume request. An expired active/activation-pending row is
+included, because topology failure can prevent the reconciler from reaching
+the restore step.
+
 ## Validation boundary
 
 Regression suites exercise real pause, SQLite state, Advanced Blocking,
 Configuration Sync, Domain Groups, History, and DNS Schedule code with simulated
 Technitium transport. React tests exercise the rendered header and handlers.
-These checks do not establish live cluster failover, real container restart,
-or browser/mobile visual correctness.
+These automated checks do not establish live cluster failover, real container
+restart, or browser/mobile visual correctness.
+
+### Live recovery acceptance (2026-10-01)
+
+Operator-assisted checks on the deployed fork image at revision `086b122`
+verified the following with a native cluster's current Primary. Its backend
+matches the clean submission branch; the later recovery-warning UI was not
+part of this deployed image.
+
+- Restarting Companion during an active pause retained the expiry, original root
+  value, and ownership. The live root remained false after restart.
+- Companion was then stopped before a test Temporary Override expired and kept
+  stopped beyond the pause expiry. The test used only a reserved `.invalid`
+  domain, with cache flushing and email notifications disabled for the timed run.
+- After startup, the expired override entry was absent from the live app config,
+  the root was restored to true, and pause ownership, applied schedule entries,
+  and pending schedule recovery were empty. Other parsed config values matched
+  the pre-test baseline.
+
+These observations confirm the final recovered state, not a trace of every
+remote write. The real-service tests separately assert cleanup-before-restore
+ordering. Live Primary promotion was deliberately deferred: Technitium promotion
+removes the previous Primary from the cluster and needs a separate rejoin plan
+and administrative credentials. Real failover, a recurring DNS Schedule boundary, and browser/mobile visual
+validation remain unexecuted. See [Technitium's promotion API](https://github.com/TechnitiumSoftware/DnsServer/blob/master/APIDOCS.md#promote-to-primary).

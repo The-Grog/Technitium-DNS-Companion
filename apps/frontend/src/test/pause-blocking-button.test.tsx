@@ -1,5 +1,11 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const state = vi.hoisted(() => ({ current: undefined as unknown }));
 const toast = vi.hoisted(() => ({ pushToast: vi.fn() }));
@@ -9,6 +15,7 @@ vi.mock("../context/useTechnitiumState", () => ({
 vi.mock("../context/useToast", () => ({ useToast: () => toast }));
 
 import { PauseBlockingButton } from "../components/layout/PauseBlockingButton";
+import { AdvancedBlockingRecoveryBanner } from "../components/layout/AdvancedBlockingRecoveryBanner";
 
 const pause = {
   paused: true,
@@ -397,9 +404,9 @@ describe("PauseBlockingButton recovery and mixed methods", () => {
     };
     render(<PauseBlockingButton />);
     fireEvent.click(
-      screen.getByRole("button", { name: "Blocking needs attention" }),
+      screen.getByRole("button", { name: /Advanced Blocking resume failed/ }),
     );
-    expect(screen.getByText("Needs attention")).toBeInTheDocument();
+    expect(screen.getByText("Resume failed")).toBeInTheDocument();
     expect(
       screen.getByRole("menuitem", { name: "Resume now" }),
     ).toBeInTheDocument();
@@ -503,5 +510,100 @@ describe("PauseBlockingButton recovery and mixed methods", () => {
       expect(ctx.temporaryDisableBlocking).toHaveBeenCalledWith("dns1", 5),
     );
     expect(ctx.pauseAdvancedBlocking).not.toHaveBeenCalled();
+  });
+});
+
+describe("Advanced Blocking recovery warning", () => {
+  afterEach(() => vi.useRealTimers());
+  function recovery(status: string, expiresAt: string, lastError?: string) {
+    state.current = {
+      advancedBlockingPause: {
+        ...pause,
+        targets: [{ ...pause.targets[0], status, expiresAt, lastError }],
+      },
+    };
+  }
+
+  it.each(["active", "activation-pending", "resume-pending"])(
+    "shows the target and cause after expiry even while the row remains %s",
+    (status) => {
+      recovery(
+        status,
+        "2000-01-01T00:00:00Z",
+        "Current Primary credential unavailable",
+      );
+      render(<AdvancedBlockingRecoveryBanner />);
+      const alert = screen.getByRole("alert");
+      expect(alert).toHaveTextContent("resume failed");
+      expect(alert).toHaveTextContent("Blocking may still be disabled");
+      expect(alert).toHaveTextContent("cluster:default:dns.example");
+      expect(alert).toHaveTextContent("Current Primary credential unavailable");
+      expect(alert).toHaveTextContent("Apps: Modify on the current Primary");
+      expect(alert).toHaveTextContent("Resume now");
+    },
+  );
+
+  it("distinguishes awaiting restoration from a reported failure", () => {
+    recovery("resume-pending", "2030-01-01T00:00:00Z");
+    render(<AdvancedBlockingRecoveryBanner />);
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("not yet confirmed");
+  });
+
+  it("does not call an unexpired activation failure a resume failure", () => {
+    recovery("activation-pending", "2030-01-01T00:00:00Z", "offline");
+    render(<AdvancedBlockingRecoveryBanner />);
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+  });
+
+  it("persists across remount and clears after confirmed restoration", () => {
+    recovery("resume-pending", "2000-01-01T00:00:00Z", "offline");
+    const first = render(<AdvancedBlockingRecoveryBanner />);
+    expect(screen.getByRole("alert")).toBeInTheDocument();
+    first.unmount();
+    const second = render(<AdvancedBlockingRecoveryBanner />);
+    expect(screen.getByRole("alert")).toBeInTheDocument();
+    state.current = { advancedBlockingPause: { ...pause, targets: [] } };
+    second.rerender(<AdvancedBlockingRecoveryBanner />);
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("warns as expiry passes without waiting for a successful status refresh", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-10-01T12:00:00Z"));
+    recovery("activation-pending", "2026-10-01T12:00:01Z", "offline");
+    render(
+      <>
+        <PauseBlockingButton />
+        <AdvancedBlockingRecoveryBanner />
+      </>,
+    );
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    act(() => vi.advanceTimersByTime(2000));
+    expect(screen.getByRole("alert")).toHaveTextContent("resume failed");
+    expect(screen.getByRole("button", { name: /resume failed/ })).toHaveClass(
+      "app-header__pause--error",
+    );
+  });
+
+  it("lists only targets awaiting restoration in a mixed pause", () => {
+    state.current = {
+      advancedBlockingPause: {
+        ...pause,
+        targets: [
+          { ...pause.targets[0], writeTargetNodeId: "node:healthy" },
+          {
+            ...pause.targets[0],
+            writeTargetNodeId: "node:offline",
+            status: "resume-pending",
+            lastError: "offline",
+          },
+        ],
+      },
+    };
+    render(<AdvancedBlockingRecoveryBanner />);
+    expect(screen.getByRole("alert")).toHaveTextContent("node:offline");
+    expect(screen.getByRole("alert")).not.toHaveTextContent("node:healthy");
   });
 });

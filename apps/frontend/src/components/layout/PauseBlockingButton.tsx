@@ -5,11 +5,13 @@ import {
   faPause,
   faPlay,
   faShieldHalved,
+  faTriangleExclamation,
 } from "@fortawesome/free-solid-svg-icons";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useOptionalTechnitiumState } from "../../context/useTechnitiumState";
 import { useToast } from "../../context/useToast";
+import { getPauseRecoveryTargets } from "../../utils/advanced-blocking-recovery";
 
 type DurationPreset = {
   label: string;
@@ -121,7 +123,11 @@ export function PauseBlockingButton() {
   );
   const advancedPaused = Boolean(advancedPause?.paused);
   const isPaused = advancedPaused || pausedNodes.length > 0;
+  const recoveryTargets = getPauseRecoveryTargets(advancedPause, now);
+  const recoveryFailed = recoveryTargets.some((target) => target.lastError);
+  const recoveryPending = recoveryTargets.length > 0;
   const needsAttention =
+    recoveryPending ||
     (advancedPause?.pendingTargetCount ?? 0) > 0 ||
     (advancedPause?.probeErrors?.length ?? 0) > 0;
   const canResume = isPaused || hasAdvancedPauseOwnership;
@@ -131,12 +137,12 @@ export function PauseBlockingButton() {
   );
 
   useEffect(() => {
-    if (!isPaused) {
+    if (!isPaused && !hasAdvancedPauseOwnership) {
       return;
     }
     const id = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(id);
-  }, [isPaused]);
+  }, [isPaused, hasAdvancedPauseOwnership]);
 
   useEffect(() => {
     if (!menuOpen) {
@@ -368,7 +374,11 @@ export function PauseBlockingButton() {
 
   const pillClassName = [
     "app-header__pause",
-    isPaused ? "app-header__pause--paused" : "app-header__pause--active",
+    recoveryFailed
+      ? "app-header__pause--error"
+      : isPaused || recoveryPending
+        ? "app-header__pause--paused"
+        : "app-header__pause--active",
     menuOpen ? "app-header__pause--open" : "",
   ]
     .filter(Boolean)
@@ -384,34 +394,52 @@ export function PauseBlockingButton() {
         aria-haspopup="menu"
         aria-expanded={menuOpen}
         aria-label={
-          isPaused
-            ? `Blocking paused, ${countdownLabel} remaining`
-            : needsAttention
-              ? "Blocking needs attention"
-              : "Pause blocking"
+          recoveryPending
+            ? recoveryFailed
+              ? "Advanced Blocking resume failed; blocking may still be disabled"
+              : "Advanced Blocking resume is not yet confirmed"
+            : isPaused
+              ? `Blocking paused, ${countdownLabel} remaining`
+              : needsAttention
+                ? "Blocking needs attention"
+                : "Pause blocking"
         }
         title={
-          isPaused
-            ? `Blocking paused — ${countdownLabel} remaining`
-            : needsAttention
-              ? "Blocking needs attention"
-              : "Pause DNS blocking"
+          recoveryPending
+            ? "Advanced Blocking may still be disabled. See recovery details below."
+            : isPaused
+              ? `Blocking paused — ${countdownLabel} remaining`
+              : needsAttention
+                ? "Blocking needs attention"
+                : "Pause DNS blocking"
         }
       >
         <FontAwesomeIcon
-          icon={busy ? faCircleNotch : isPaused ? faPause : faShieldHalved}
+          icon={
+            busy
+              ? faCircleNotch
+              : recoveryPending
+                ? faTriangleExclamation
+                : isPaused
+                  ? faPause
+                  : faShieldHalved
+          }
           spin={busy}
         />
         <span className="app-header__pause-label">
           {busy
             ? "Working…"
-            : needsAttention
-              ? isPaused
-                ? `Partially paused · ${countdownLabel}`
-                : "Needs attention"
-              : isPaused
-                ? `Paused · ${countdownLabel}`
-                : "Active"}
+            : recoveryPending
+              ? recoveryFailed
+                ? "Resume failed"
+                : "Resume pending"
+              : needsAttention
+                ? isPaused
+                  ? `Partially paused · ${countdownLabel}`
+                  : "Needs attention"
+                : isPaused
+                  ? `Paused · ${countdownLabel}`
+                  : "Active"}
         </span>
         <FontAwesomeIcon
           icon={faCaretDown}
